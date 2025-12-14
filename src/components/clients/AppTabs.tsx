@@ -23,7 +23,7 @@ export function AppTabs({ activeApp, onAppChange }: AppTabsProps) {
             "px-4 py-2 rounded-t-lg text-sm font-medium transition-colors",
             activeApp === app.id
               ? "bg-primary text-primary-foreground"
-              : "hover:bg-muted text-muted-foreground"
+              : "hover:bg-muted text-muted-foreground",
           )}
           title={app.description}
         >

@@ -28,7 +28,9 @@ export function useSwitch(appType: AppType) {
     fetchProviders();
   }, [fetchProviders]);
 
-  const addProvider = async (provider: Omit<Provider, "id" | "is_current" | "created_at">) => {
+  const addProvider = async (
+    provider: Omit<Provider, "id" | "is_current" | "created_at">,
+  ) => {
     const newProvider: Provider = {
       ...provider,
       id: crypto.randomUUID(),

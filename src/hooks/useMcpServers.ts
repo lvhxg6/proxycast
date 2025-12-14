@@ -89,7 +89,11 @@ export function useMcpServers() {
     await fetchServers();
   };
 
-  const toggleServer = async (id: string, appType: string, enabled: boolean) => {
+  const toggleServer = async (
+    id: string,
+    appType: string,
+    enabled: boolean,
+  ) => {
     await mcpApi.toggleServer(id, appType, enabled);
     await fetchServers();
   };

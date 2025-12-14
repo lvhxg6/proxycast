@@ -24,7 +24,9 @@ export function GeneralSettings() {
     // 应用主题
     const root = document.documentElement;
     if (newTheme === "system") {
-      const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const systemDark = window.matchMedia(
+        "(prefers-color-scheme: dark)",
+      ).matches;
       root.classList.toggle("dark", systemDark);
     } else {
       root.classList.toggle("dark", newTheme === "dark");
@@ -54,7 +56,7 @@ export function GeneralSettings() {
                 "flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors",
                 theme === option.id
                   ? "border-primary bg-primary/10 text-primary"
-                  : "border-border hover:border-muted-foreground/50"
+                  : "border-border hover:border-muted-foreground/50",
               )}
             >
               <option.icon className="h-4 w-4" />
@@ -68,14 +70,18 @@ export function GeneralSettings() {
       <div className="space-y-4">
         <div>
           <h3 className="text-sm font-medium">启动行为</h3>
-          <p className="text-xs text-muted-foreground">配置应用启动和关闭行为</p>
+          <p className="text-xs text-muted-foreground">
+            配置应用启动和关闭行为
+          </p>
         </div>
 
         <div className="space-y-3">
           <label className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:bg-muted/50">
             <div>
               <span className="text-sm font-medium">开机自启动</span>
-              <p className="text-xs text-muted-foreground">系统启动时自动运行 ProxyCast</p>
+              <p className="text-xs text-muted-foreground">
+                系统启动时自动运行 ProxyCast
+              </p>
             </div>
             <input
               type="checkbox"
@@ -88,7 +94,9 @@ export function GeneralSettings() {
           <label className="flex items-center justify-between p-3 rounded-lg border cursor-pointer hover:bg-muted/50">
             <div>
               <span className="text-sm font-medium">关闭时最小化到托盘</span>
-              <p className="text-xs text-muted-foreground">点击关闭按钮时最小化而不是退出</p>
+              <p className="text-xs text-muted-foreground">
+                点击关闭按钮时最小化而不是退出
+              </p>
             </div>
             <input
               type="checkbox"

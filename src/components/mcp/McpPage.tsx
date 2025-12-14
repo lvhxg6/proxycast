@@ -54,7 +54,7 @@ const defaultServerConfig = JSON.stringify(
     env: {},
   },
   null,
-  2
+  2,
 );
 
 export function McpPage() {
@@ -243,7 +243,9 @@ export function McpPage() {
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border hover:bg-muted text-sm"
               title="从外部应用导入 MCP 配置"
             >
-              <Download className={cn("h-4 w-4", importing && "animate-pulse")} />
+              <Download
+                className={cn("h-4 w-4", importing && "animate-pulse")}
+              />
               {importing ? "导入中..." : "导入"}
             </button>
             {showImportMenu && (
@@ -305,7 +307,9 @@ export function McpPage() {
                 className="p-1.5 rounded hover:bg-muted"
                 title="刷新"
               >
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                <RefreshCw
+                  className={cn("h-4 w-4", loading && "animate-spin")}
+                />
               </button>
               <button
                 onClick={handleCreateNew}
@@ -341,7 +345,7 @@ export function McpPage() {
                     "p-2.5 rounded-lg cursor-pointer transition-colors",
                     selectedServer?.id === server.id
                       ? "bg-primary/10 border border-primary"
-                      : "hover:bg-muted border border-transparent"
+                      : "hover:bg-muted border border-transparent",
                   )}
                 >
                   <span className="font-medium text-sm truncate block">
@@ -399,7 +403,9 @@ export function McpPage() {
                 {/* 预设选择器（仅新建时显示） */}
                 {isCreating && (
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-muted-foreground">预设:</span>
+                    <span className="text-sm font-medium text-muted-foreground">
+                      预设:
+                    </span>
                     <div className="flex flex-wrap gap-1.5">
                       {mcpPresets.map((preset) => (
                         <button
@@ -410,7 +416,7 @@ export function McpPage() {
                             "px-2.5 py-1 rounded text-xs transition-colors",
                             selectedPreset === preset.id
                               ? "bg-primary text-primary-foreground"
-                              : "bg-muted hover:bg-muted/80 text-muted-foreground"
+                              : "bg-muted hover:bg-muted/80 text-muted-foreground",
                           )}
                         >
                           {preset.name}
@@ -435,7 +441,9 @@ export function McpPage() {
                     />
                   </div>
                   <div className="flex-1">
-                    <label className="block text-xs font-medium mb-1 text-muted-foreground">描述</label>
+                    <label className="block text-xs font-medium mb-1 text-muted-foreground">
+                      描述
+                    </label>
                     <input
                       type="text"
                       value={editDescription}
@@ -448,7 +456,9 @@ export function McpPage() {
 
                 {/* 同步到哪些应用 - 横排 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-xs font-medium text-muted-foreground">同步到:</span>
+                  <span className="text-xs font-medium text-muted-foreground">
+                    同步到:
+                  </span>
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input
                       type="checkbox"
@@ -489,7 +499,7 @@ export function McpPage() {
                   onChange={(e) => handleConfigChange(e.target.value)}
                   className={cn(
                     "flex-1 w-full px-3 py-2 rounded-lg border bg-muted/50 focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none font-mono text-sm resize-none",
-                    configError && "border-destructive"
+                    configError && "border-destructive",
                   )}
                   placeholder='{"command": "npx", "args": [...], "env": {...}}'
                 />

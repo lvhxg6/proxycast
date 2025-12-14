@@ -225,7 +225,9 @@ function CredentialPanel({ provider }: { provider: OAuthProvider }) {
             disabled={isLoading || !credentials?.has_refresh_token}
             className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
           >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
+            <RefreshCw
+              className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`}
+            />
             刷新 Token
           </button>
           <button
@@ -340,13 +342,21 @@ function CredentialOverview() {
             <div className="text-xs space-y-1">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Access Token</span>
-                <span className={cred.has_access_token ? "text-green-600" : "text-red-500"}>
+                <span
+                  className={
+                    cred.has_access_token ? "text-green-600" : "text-red-500"
+                  }
+                >
                   {cred.has_access_token ? "已加载" : "未加载"}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Refresh Token</span>
-                <span className={cred.has_refresh_token ? "text-green-600" : "text-red-500"}>
+                <span
+                  className={
+                    cred.has_refresh_token ? "text-green-600" : "text-red-500"
+                  }
+                >
                   {cred.has_refresh_token ? "已加载" : "未加载"}
                 </span>
               </div>

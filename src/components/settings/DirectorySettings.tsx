@@ -61,7 +61,9 @@ export function DirectorySettings() {
             <div className="flex items-center justify-between">
               <div>
                 <label className="text-sm font-medium">{item.label}</label>
-                <p className="text-xs text-muted-foreground">{item.description}</p>
+                <p className="text-xs text-muted-foreground">
+                  {item.description}
+                </p>
               </div>
               <button
                 onClick={() => handleReset(item.key)}

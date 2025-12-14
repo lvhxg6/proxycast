@@ -32,13 +32,13 @@ function ToggleSwitch({
       className={cn(
         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20",
         enabled ? "bg-primary" : "bg-muted-foreground/30",
-        disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+        disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
       )}
     >
       <span
         className={cn(
           "inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform",
-          enabled ? "translate-x-5" : "translate-x-1"
+          enabled ? "translate-x-5" : "translate-x-1",
         )}
       />
     </button>
@@ -57,7 +57,7 @@ export function PromptCard({
         "relative rounded-lg border p-4 transition-all",
         prompt.enabled
           ? "border-primary bg-primary/5 ring-1 ring-primary"
-          : "hover:border-muted-foreground/50"
+          : "hover:border-muted-foreground/50",
       )}
     >
       {prompt.enabled && (
@@ -68,10 +68,7 @@ export function PromptCard({
 
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-3">
-          <ToggleSwitch
-            enabled={prompt.enabled}
-            onChange={onToggle}
-          />
+          <ToggleSwitch enabled={prompt.enabled} onChange={onToggle} />
           <div className="h-8 w-8 rounded-lg bg-muted flex items-center justify-center">
             <FileText className="h-4 w-4" />
           </div>
@@ -100,7 +97,7 @@ export function PromptCard({
               "p-1.5 rounded",
               prompt.enabled
                 ? "opacity-30 cursor-not-allowed"
-                : "hover:bg-destructive/10 text-destructive"
+                : "hover:bg-destructive/10 text-destructive",
             )}
             title={prompt.enabled ? "无法删除已启用的提示词" : "删除"}
           >
@@ -118,7 +115,9 @@ export function PromptCard({
 
       <div className="mt-3">
         {prompt.enabled ? (
-          <span className="text-sm text-primary font-medium">已启用 (同步到配置文件)</span>
+          <span className="text-sm text-primary font-medium">
+            已启用 (同步到配置文件)
+          </span>
         ) : (
           <span className="text-sm text-muted-foreground">未启用</span>
         )}

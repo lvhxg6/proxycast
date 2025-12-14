@@ -17,8 +17,7 @@ export interface McpServer {
 }
 
 export const mcpApi = {
-  getServers: (): Promise<McpServer[]> =>
-    invoke("get_mcp_servers"),
+  getServers: (): Promise<McpServer[]> => invoke("get_mcp_servers"),
 
   addServer: (server: McpServer): Promise<void> =>
     invoke("add_mcp_server", { server }),
@@ -29,14 +28,16 @@ export const mcpApi = {
   deleteServer: (id: string): Promise<void> =>
     invoke("delete_mcp_server", { id }),
 
-  toggleServer: (id: string, appType: string, enabled: boolean): Promise<void> =>
-    invoke("toggle_mcp_server", { id, appType, enabled }),
+  toggleServer: (
+    id: string,
+    appType: string,
+    enabled: boolean,
+  ): Promise<void> => invoke("toggle_mcp_server", { id, appType, enabled }),
 
   /** 从外部应用导入 MCP 配置 */
   importFromApp: (appType: string): Promise<number> =>
     invoke("import_mcp_from_app", { appType }),
 
   /** 同步所有 MCP 配置到实际配置文件 */
-  syncAllToLive: (): Promise<void> =>
-    invoke("sync_all_mcp_to_live"),
+  syncAllToLive: (): Promise<void> => invoke("sync_all_mcp_to_live"),
 };

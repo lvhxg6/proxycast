@@ -51,7 +51,9 @@ export function LiveConfigModal({ appType, onClose }: LiveConfigModalProps) {
               className="p-1.5 rounded hover:bg-muted"
               title="刷新"
             >
-              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              <RefreshCw
+                className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
+              />
             </button>
             <button onClick={onClose} className="p-1.5 rounded hover:bg-muted">
               <X className="h-5 w-5" />
@@ -73,15 +75,16 @@ export function LiveConfigModal({ appType, onClose }: LiveConfigModalProps) {
               {JSON.stringify(config, null, 2)}
             </pre>
           ) : (
-            <p className="text-muted-foreground text-center py-8">
-              无配置数据
-            </p>
+            <p className="text-muted-foreground text-center py-8">无配置数据</p>
           )}
         </div>
 
         <div className="p-4 border-t bg-muted/30">
           <p className="text-xs text-muted-foreground">
-            配置文件路径: <code className="px-1 py-0.5 rounded bg-muted">{configPaths[appType]}</code>
+            配置文件路径:{" "}
+            <code className="px-1 py-0.5 rounded bg-muted">
+              {configPaths[appType]}
+            </code>
           </p>
         </div>
       </div>

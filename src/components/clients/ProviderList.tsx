@@ -24,7 +24,9 @@ export function ProviderList({ appType }: ProviderListProps) {
   } = useSwitch(appType);
 
   const [showForm, setShowForm] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<typeof providers[0] | null>(null);
+  const [editingProvider, setEditingProvider] = useState<
+    (typeof providers)[0] | null
+  >(null);
   const [showLiveConfig, setShowLiveConfig] = useState(false);
 
   const handleAdd = () => {
@@ -32,7 +34,7 @@ export function ProviderList({ appType }: ProviderListProps) {
     setShowForm(true);
   };
 
-  const handleEdit = (provider: typeof providers[0]) => {
+  const handleEdit = (provider: (typeof providers)[0]) => {
     setEditingProvider(provider);
     setShowForm(true);
   };

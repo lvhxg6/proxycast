@@ -123,7 +123,9 @@ export function Dashboard() {
             <Server className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm text-muted-foreground">默认 Provider</span>
           </div>
-          <div className="mt-2 font-medium">{getProviderName(defaultProvider)}</div>
+          <div className="mt-2 font-medium">
+            {getProviderName(defaultProvider)}
+          </div>
         </div>
       </div>
 
@@ -169,7 +171,9 @@ export function Dashboard() {
               className="flex items-center justify-between rounded-lg border bg-background p-3"
             >
               <div>
-                <div className="font-medium">{getProviderName(cred.provider)}</div>
+                <div className="font-medium">
+                  {getProviderName(cred.provider)}
+                </div>
                 <div className="text-xs text-muted-foreground">
                   {cred.has_access_token ? "Token 已加载" : "未配置"}
                 </div>
@@ -195,7 +199,9 @@ export function Dashboard() {
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
               <span className="text-muted-foreground">API 地址:</span>
-              <code className="ml-2 rounded bg-muted px-2 py-1">{serverUrl}</code>
+              <code className="ml-2 rounded bg-muted px-2 py-1">
+                {serverUrl}
+              </code>
             </div>
             <div>
               <span className="text-muted-foreground">API Key:</span>
@@ -245,7 +251,9 @@ function QuickLinkCard({
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
       </div>
-      <div className={`flex items-center gap-1 text-xs ${statusColors[status]}`}>
+      <div
+        className={`flex items-center gap-1 text-xs ${statusColors[status]}`}
+      >
         <StatusIcon className="h-3 w-3" />
         {statusText}
       </div>

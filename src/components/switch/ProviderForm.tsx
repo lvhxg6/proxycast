@@ -7,12 +7,20 @@ import { cn } from "@/lib/utils";
 interface ProviderFormProps {
   appType: AppType;
   provider: Provider | null;
-  onSave: (data: Omit<Provider, "id" | "is_current" | "created_at">) => Promise<void>;
+  onSave: (
+    data: Omit<Provider, "id" | "is_current" | "created_at">,
+  ) => Promise<void>;
   onCancel: () => void;
 }
 
 // 供应商分类
-type ProviderCategory = "official" | "cn_official" | "aggregator" | "third_party" | "proxy" | "custom";
+type ProviderCategory =
+  | "official"
+  | "cn_official"
+  | "aggregator"
+  | "third_party"
+  | "proxy"
+  | "custom";
 
 // 预设供应商接口
 interface ProviderPreset {
@@ -70,7 +78,8 @@ const presets: Record<AppType, ProviderPreset[]> = {
       iconColor: "#6B4FBB",
       websiteUrl: "https://bailian.console.aliyun.com",
       apiKeyUrl: "https://bailian.console.aliyun.com/?apiKey=1#/api-key",
-      defaultBaseUrl: "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy",
+      defaultBaseUrl:
+        "https://dashscope.aliyuncs.com/api/v2/apps/claude-code-proxy",
     },
     {
       id: "kimi",
@@ -96,7 +105,8 @@ const presets: Record<AppType, ProviderPreset[]> = {
       category: "cn_official",
       iconColor: "#F97316",
       websiteUrl: "https://platform.minimaxi.com",
-      apiKeyUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key",
+      apiKeyUrl:
+        "https://platform.minimaxi.com/user-center/basic-information/interface-key",
       defaultBaseUrl: "https://api.minimaxi.com/anthropic",
     },
     {
@@ -105,7 +115,8 @@ const presets: Record<AppType, ProviderPreset[]> = {
       category: "cn_official",
       iconColor: "#5DADEC",
       websiteUrl: "https://www.volcengine.com/product/doubao",
-      apiKeyUrl: "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
+      apiKeyUrl:
+        "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
       defaultBaseUrl: "https://ark.cn-beijing.volces.com/api/coding",
     },
     // 聚合服务
@@ -221,10 +232,14 @@ const categoryLabels: Record<ProviderCategory, string> = {
 };
 
 // 默认 Codex auth.json 模板
-const defaultCodexAuth = JSON.stringify({
-  api_key: "",
-  api_base_url: ""
-}, null, 2);
+const defaultCodexAuth = JSON.stringify(
+  {
+    api_key: "",
+    api_base_url: "",
+  },
+  null,
+  2,
+);
 
 // 默认 Codex config.toml 模板
 const defaultCodexConfig = `# Codex 配置文件
@@ -237,17 +252,26 @@ GOOGLE_GEMINI_BASE_URL=
 GEMINI_MODEL=gemini-2.0-flash`;
 
 // 默认 Gemini settings.json 模板
-const defaultGeminiSettings = JSON.stringify({
-  mcpServers: {}
-}, null, 2);
+const defaultGeminiSettings = JSON.stringify(
+  {
+    mcpServers: {},
+  },
+  null,
+  2,
+);
 
-export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFormProps) {
+export function ProviderForm({
+  appType,
+  provider,
+  onSave,
+  onCancel,
+}: ProviderFormProps) {
   const isEditMode = Boolean(provider);
   const appPresets = useMemo(() => presets[appType] || [], [appType]);
 
   // 基础字段
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(
-    isEditMode ? null : "custom"
+    isEditMode ? null : "custom",
   );
   const [name, setName] = useState(provider?.name || "");
   const [notes, setNotes] = useState(provider?.notes || "");
@@ -255,12 +279,31 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
 
   // 从 provider.settings_config 中提取 Claude 配置
   const extractClaudeConfig = () => {
-    if (!provider?.settings_config || typeof provider.settings_config !== 'object') {
-      return { apiKey: "", baseUrl: "", primaryModel: "claude-sonnet-4-20250514", haikuModel: "", sonnetModel: "", opusModel: "" };
+    if (
+      !provider?.settings_config ||
+      typeof provider.settings_config !== "object"
+    ) {
+      return {
+        apiKey: "",
+        baseUrl: "",
+        primaryModel: "claude-sonnet-4-20250514",
+        haikuModel: "",
+        sonnetModel: "",
+        opusModel: "",
+      };
     }
-    const env = (provider.settings_config as Record<string, unknown>).env as Record<string, string> | undefined;
+    const env = (provider.settings_config as Record<string, unknown>).env as
+      | Record<string, string>
+      | undefined;
     if (!env) {
-      return { apiKey: "", baseUrl: "", primaryModel: "claude-sonnet-4-20250514", haikuModel: "", sonnetModel: "", opusModel: "" };
+      return {
+        apiKey: "",
+        baseUrl: "",
+        primaryModel: "claude-sonnet-4-20250514",
+        haikuModel: "",
+        sonnetModel: "",
+        opusModel: "",
+      };
     }
     return {
       apiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || "",
@@ -284,7 +327,10 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
 
   // Claude 配置 JSON（可编辑）
   const [claudeConfigJson, setClaudeConfigJson] = useState(() => {
-    if (provider?.settings_config && typeof provider.settings_config === 'object') {
+    if (
+      provider?.settings_config &&
+      typeof provider.settings_config === "object"
+    ) {
       return JSON.stringify(provider.settings_config, null, 2);
     }
     return JSON.stringify({ env: {} }, null, 2);
@@ -350,36 +396,50 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
 
   // Codex 专属字段 - 使用代码编辑器
   const [codexAuth, setCodexAuth] = useState(() => {
-    if (provider?.settings_config && typeof provider.settings_config === 'object') {
+    if (
+      provider?.settings_config &&
+      typeof provider.settings_config === "object"
+    ) {
       const auth = (provider.settings_config as Record<string, unknown>).auth;
       if (auth) return JSON.stringify(auth, null, 2);
     }
     return defaultCodexAuth;
   });
   const [codexConfig, setCodexConfig] = useState(() => {
-    if (provider?.settings_config && typeof provider.settings_config === 'object') {
-      const config = (provider.settings_config as Record<string, unknown>).config;
-      if (typeof config === 'string') return config;
+    if (
+      provider?.settings_config &&
+      typeof provider.settings_config === "object"
+    ) {
+      const config = (provider.settings_config as Record<string, unknown>)
+        .config;
+      if (typeof config === "string") return config;
     }
     return defaultCodexConfig;
   });
 
   // Gemini 专属字段 - 使用代码编辑器
   const [geminiEnv, setGeminiEnv] = useState(() => {
-    if (provider?.settings_config && typeof provider.settings_config === 'object') {
+    if (
+      provider?.settings_config &&
+      typeof provider.settings_config === "object"
+    ) {
       const env = (provider.settings_config as Record<string, unknown>).env;
-      if (env && typeof env === 'object') {
+      if (env && typeof env === "object") {
         return Object.entries(env as Record<string, string>)
           .map(([k, v]) => `${k}=${v}`)
-          .join('\n');
+          .join("\n");
       }
     }
     return defaultGeminiEnv;
   });
   const [geminiSettings, setGeminiSettings] = useState(() => {
-    if (provider?.settings_config && typeof provider.settings_config === 'object') {
-      const config = (provider.settings_config as Record<string, unknown>).config;
-      if (config && typeof config === 'object') {
+    if (
+      provider?.settings_config &&
+      typeof provider.settings_config === "object"
+    ) {
+      const config = (provider.settings_config as Record<string, unknown>)
+        .config;
+      if (config && typeof config === "object") {
         return JSON.stringify(config, null, 2);
       }
     }
@@ -431,12 +491,20 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
             // 重置 JSON 手动编辑标记，让表单同步到 JSON
             setJsonManuallyEdited(false);
           } else if (appType === "codex") {
-            setCodexAuth(JSON.stringify({
-              api_key: proxyApiKey,
-              api_base_url: `${proxyBaseUrl}/v1`,
-            }, null, 2));
+            setCodexAuth(
+              JSON.stringify(
+                {
+                  api_key: proxyApiKey,
+                  api_base_url: `${proxyBaseUrl}/v1`,
+                },
+                null,
+                2,
+              ),
+            );
           } else if (appType === "gemini") {
-            setGeminiEnv(`GEMINI_API_KEY=${proxyApiKey}\nGOOGLE_GEMINI_BASE_URL=${proxyBaseUrl}\nGEMINI_MODEL=gemini-2.0-flash`);
+            setGeminiEnv(
+              `GEMINI_API_KEY=${proxyApiKey}\nGOOGLE_GEMINI_BASE_URL=${proxyBaseUrl}\nGEMINI_MODEL=gemini-2.0-flash`,
+            );
           }
           return;
         } catch (e) {
@@ -474,7 +542,7 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
         if (preset.defaultGeminiEnv) {
           const envLines = Object.entries(preset.defaultGeminiEnv)
             .map(([k, v]) => `${k}=${v}`)
-            .join('\n');
+            .join("\n");
           setGeminiEnv(envLines);
         } else {
           setGeminiEnv(defaultGeminiEnv);
@@ -504,10 +572,10 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
 
     if (appType === "gemini") {
       const env: Record<string, string> = {};
-      for (const line of geminiEnv.split('\n')) {
+      for (const line of geminiEnv.split("\n")) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-        const idx = trimmed.indexOf('=');
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const idx = trimmed.indexOf("=");
         if (idx > 0) {
           const key = trimmed.slice(0, idx).trim();
           const value = trimmed.slice(idx + 1).trim();
@@ -535,7 +603,12 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
     }
 
     // 非官方供应商必填校验（新增模式必填，编辑模式可留空保持原值）
-    if (!isEditMode && showApiFields && appType === "claude" && !apiKey.trim()) {
+    if (
+      !isEditMode &&
+      showApiFields &&
+      appType === "claude" &&
+      !apiKey.trim()
+    ) {
       setError("请填写 API Key");
       return;
     }
@@ -590,7 +663,7 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                             "flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-all",
                             selectedPresetId === preset.id
                               ? "border-primary bg-primary/10 text-primary"
-                              : "border-border hover:border-muted-foreground/50"
+                              : "border-border hover:border-muted-foreground/50",
                           )}
                         >
                           <span
@@ -643,9 +716,12 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                   <label className="text-sm font-medium">
                     API Key <span className="text-destructive">*</span>
                   </label>
-                  {(selectedPreset?.apiKeyUrl || selectedPreset?.websiteUrl) && (
+                  {(selectedPreset?.apiKeyUrl ||
+                    selectedPreset?.websiteUrl) && (
                     <a
-                      href={selectedPreset?.apiKeyUrl || selectedPreset?.websiteUrl}
+                      href={
+                        selectedPreset?.apiKeyUrl || selectedPreset?.websiteUrl
+                      }
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-primary hover:underline flex items-center gap-1"
@@ -679,7 +755,9 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1.5">API 端点</label>
+                <label className="block text-sm font-medium mb-1.5">
+                  API 端点
+                </label>
                 <input
                   type="text"
                   value={baseUrl}
@@ -687,14 +765,18 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                   className="w-full px-3 py-2 rounded-lg border bg-background focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none font-mono"
                   placeholder="https://api.example.com/v1"
                 />
-                <p className="text-xs text-muted-foreground mt-1">留空使用默认端点</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  留空使用默认端点
+                </p>
               </div>
 
               <div className="space-y-4">
                 <label className="block text-sm font-medium">模型配置</label>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs text-muted-foreground mb-1">主模型</label>
+                    <label className="block text-xs text-muted-foreground mb-1">
+                      主模型
+                    </label>
                     <input
                       type="text"
                       value={primaryModel}
@@ -704,7 +786,9 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Haiku 默认模型</label>
+                    <label className="block text-xs text-muted-foreground mb-1">
+                      Haiku 默认模型
+                    </label>
                     <input
                       type="text"
                       value={haikuModel}
@@ -713,7 +797,9 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Sonnet 默认模型</label>
+                    <label className="block text-xs text-muted-foreground mb-1">
+                      Sonnet 默认模型
+                    </label>
                     <input
                       type="text"
                       value={sonnetModel}
@@ -722,7 +808,9 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                     />
                   </div>
                   <div>
-                    <label className="block text-xs text-muted-foreground mb-1">Opus 默认模型</label>
+                    <label className="block text-xs text-muted-foreground mb-1">
+                      Opus 默认模型
+                    </label>
                     <input
                       type="text"
                       value={opusModel}
@@ -754,7 +842,8 @@ export function ProviderForm({ appType, provider, onSave, onCancel }: ProviderFo
                   onChange={(e) => handleJsonChange(e.target.value)}
                   className={cn(
                     "w-full px-3 py-2 rounded-lg border bg-muted/50 font-mono text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary outline-none resize-none",
-                    jsonError && "border-destructive focus:ring-destructive/20 focus:border-destructive"
+                    jsonError &&
+                      "border-destructive focus:ring-destructive/20 focus:border-destructive",
                   )}
                   rows={10}
                   placeholder='{"env": {}}'

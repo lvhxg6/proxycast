@@ -23,7 +23,7 @@ export function ProviderCard({
         "relative rounded-lg border p-4 transition-all",
         isCurrent
           ? "border-primary bg-primary/5 ring-1 ring-primary"
-          : "hover:border-muted-foreground/50"
+          : "hover:border-muted-foreground/50",
       )}
     >
       {isCurrent && (
@@ -70,7 +70,7 @@ export function ProviderCard({
               "p-1.5 rounded text-destructive",
               isCurrent
                 ? "opacity-30 cursor-not-allowed"
-                : "hover:bg-destructive/10"
+                : "hover:bg-destructive/10",
             )}
             title={isCurrent ? "无法删除当前使用中的配置" : "删除"}
           >

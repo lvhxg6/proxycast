@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { ExternalLink, RefreshCw, CheckCircle2, AlertCircle } from "lucide-react";
+import {
+  ExternalLink,
+  RefreshCw,
+  CheckCircle2,
+  AlertCircle,
+} from "lucide-react";
 
 interface VersionInfo {
   current: string;
@@ -124,7 +129,9 @@ function ToolVersionItem({ name, version }: { name: string; version: string }) {
         ) : (
           <AlertCircle className="h-4 w-4 text-muted-foreground" />
         )}
-        <span className="text-sm text-muted-foreground font-mono">{version}</span>
+        <span className="text-sm text-muted-foreground font-mono">
+          {version}
+        </span>
       </div>
     </div>
   );

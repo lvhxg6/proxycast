@@ -9,7 +9,12 @@ interface PromptFormProps {
   onCancel: () => void;
 }
 
-export function PromptForm({ appType, prompt, onSave, onCancel }: PromptFormProps) {
+export function PromptForm({
+  appType,
+  prompt,
+  onSave,
+  onCancel,
+}: PromptFormProps) {
   const [name, setName] = useState(prompt?.name || "");
   const [content, setContent] = useState(prompt?.content || "");
   const [description, setDescription] = useState(prompt?.description || "");

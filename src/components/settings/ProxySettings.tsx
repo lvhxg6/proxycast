@@ -24,11 +24,16 @@ export function ProxySettings() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [message, setMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
 
   // API Compatibility Check
   const [checking, setChecking] = useState(false);
-  const [checkResult, setCheckResult] = useState<ApiCompatibilityResult | null>(null);
+  const [checkResult, setCheckResult] = useState<ApiCompatibilityResult | null>(
+    null,
+  );
   const [lastCheckTime, setLastCheckTime] = useState<Date | null>(null);
 
   useEffect(() => {
@@ -134,13 +139,17 @@ export function ProxySettings() {
       <div className="space-y-4">
         <div>
           <h3 className="text-sm font-medium">代理服务配置</h3>
-          <p className="text-xs text-muted-foreground">配置本地代理服务器参数</p>
+          <p className="text-xs text-muted-foreground">
+            配置本地代理服务器参数
+          </p>
         </div>
 
         <div className="space-y-4 p-4 rounded-lg border">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1.5">监听地址</label>
+              <label className="block text-sm font-medium mb-1.5">
+                监听地址
+              </label>
               <input
                 type="text"
                 value={config.server.host}
@@ -194,7 +203,11 @@ export function ProxySettings() {
                   className="p-1.5 rounded hover:bg-muted"
                   title={showApiKey ? "隐藏" : "显示"}
                 >
-                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showApiKey ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
                 </button>
                 <button
                   type="button"
@@ -239,7 +252,9 @@ export function ProxySettings() {
 
         <div className="p-4 rounded-lg border space-y-4">
           <div className="rounded-lg bg-purple-50 dark:bg-purple-900/20 p-3 text-sm">
-            <p className="font-medium text-purple-700 dark:text-purple-300">检测项目：</p>
+            <p className="font-medium text-purple-700 dark:text-purple-300">
+              检测项目：
+            </p>
             <ul className="mt-1 list-inside list-disc text-purple-600 dark:text-purple-400 text-xs">
               <li>基础对话能力 (basic)</li>
               <li>Tool Calls 支持 (tool_call) - Claude Code 核心功能</li>
@@ -252,7 +267,11 @@ export function ProxySettings() {
               disabled={checking}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50"
             >
-              {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+              {checking ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Shield className="h-4 w-4" />
+              )}
               检测 Kiro
             </button>
             <button
@@ -260,7 +279,11 @@ export function ProxySettings() {
               disabled={checking}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
             >
-              {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+              {checking ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Shield className="h-4 w-4" />
+              )}
               检测 Gemini
             </button>
             <button
@@ -268,7 +291,11 @@ export function ProxySettings() {
               disabled={checking}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50"
             >
-              {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+              {checking ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Shield className="h-4 w-4" />
+              )}
               检测 Qwen
             </button>
           </div>
@@ -285,7 +312,8 @@ export function ProxySettings() {
                 <div className="flex items-center gap-2">
                   {getStatusIcon(checkResult.overall_status)}
                   <span className="font-medium">
-                    {checkResult.provider.toUpperCase()} - {getStatusText(checkResult.overall_status)}
+                    {checkResult.provider.toUpperCase()} -{" "}
+                    {getStatusText(checkResult.overall_status)}
                   </span>
                 </div>
                 <span className="text-xs text-muted-foreground">
@@ -310,7 +338,13 @@ export function ProxySettings() {
                       ) : (
                         <XCircle className="h-4 w-4 text-red-500" />
                       )}
-                      <span className={r.model.includes("tool_call") ? "font-medium text-purple-600" : ""}>
+                      <span
+                        className={
+                          r.model.includes("tool_call")
+                            ? "font-medium text-purple-600"
+                            : ""
+                        }
+                      >
                         {r.model}
                       </span>
                     </div>

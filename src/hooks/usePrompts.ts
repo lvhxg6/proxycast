@@ -3,7 +3,9 @@ import { promptsApi, Prompt, AppType } from "@/lib/api/prompts";
 
 export function usePrompts(appType: AppType) {
   const [prompts, setPrompts] = useState<Record<string, Prompt>>({});
-  const [currentFileContent, setCurrentFileContent] = useState<string | null>(null);
+  const [currentFileContent, setCurrentFileContent] = useState<string | null>(
+    null,
+  );
   const [loading, setLoading] = useState(false);
   const hasAutoImported = useRef<Record<string, boolean>>({});
 

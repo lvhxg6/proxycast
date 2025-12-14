@@ -197,7 +197,10 @@ export function ApiServerPage() {
     try {
       await setDefaultProvider(providerId);
       setDefaultProviderState(providerId);
-      setMessage({ type: "success", text: `默认 Provider 已切换为: ${providerId}` });
+      setMessage({
+        type: "success",
+        text: `默认 Provider 已切换为: ${providerId}`,
+      });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
       setMessage({ type: "error", text: `切换失败: ${errMsg}` });
@@ -288,7 +291,12 @@ export function ApiServerPage() {
       body: JSON.stringify({
         model: "claude-sonnet-4-5",
         max_tokens: 100,
-        messages: [{ role: "user", content: "What is 1+1? Answer with just the number." }],
+        messages: [
+          {
+            role: "user",
+            content: "What is 1+1? Answer with just the number.",
+          },
+        ],
       }),
     },
   ];
@@ -501,7 +509,9 @@ export function ApiServerPage() {
                 />
               </div>
               <div>
-                <label className="block text-muted-foreground mb-1">API Key</label>
+                <label className="block text-muted-foreground mb-1">
+                  API Key
+                </label>
                 <input
                   type="text"
                   value={editApiKey}
@@ -647,7 +657,8 @@ export function ApiServerPage() {
                           <div>
                             <p className="mb-1 text-xs font-medium text-muted-foreground">
                               响应{" "}
-                              {result.httpStatus && `(HTTP ${result.httpStatus})`}
+                              {result.httpStatus &&
+                                `(HTTP ${result.httpStatus})`}
                             </p>
                             <pre
                               className={`rounded p-2 text-xs overflow-x-auto max-h-40 ${

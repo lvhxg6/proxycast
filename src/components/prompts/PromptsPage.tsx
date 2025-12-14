@@ -1,5 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
-import { Plus, RefreshCw, Check, Trash2, Download, FileText } from "lucide-react";
+import {
+  Plus,
+  RefreshCw,
+  Check,
+  Trash2,
+  Download,
+  FileText,
+} from "lucide-react";
 import { AppType, Prompt } from "@/lib/api/prompts";
 import { usePrompts } from "@/hooks/usePrompts";
 import { cn } from "@/lib/utils";
@@ -33,13 +40,13 @@ function ToggleSwitch({
       className={cn(
         "relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary/20",
         enabled ? "bg-primary" : "bg-muted-foreground/30",
-        disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"
+        disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
       )}
     >
       <span
         className={cn(
           "inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform",
-          enabled ? "translate-x-5" : "translate-x-1"
+          enabled ? "translate-x-5" : "translate-x-1",
         )}
       />
     </button>
@@ -148,7 +155,9 @@ export function PromptsPage() {
       await importFromFile();
     } catch (error) {
       console.error("Failed to import:", error);
-      alert("导入失败：" + (error instanceof Error ? error.message : String(error)));
+      alert(
+        "导入失败：" + (error instanceof Error ? error.message : String(error)),
+      );
     } finally {
       setImporting(false);
     }
@@ -180,7 +189,7 @@ export function PromptsPage() {
               "px-4 py-2 rounded-t-lg text-sm font-medium transition-colors",
               activeApp === app.id
                 ? "bg-primary text-primary-foreground"
-                : "hover:bg-muted text-muted-foreground"
+                : "hover:bg-muted text-muted-foreground",
             )}
           >
             {app.label}
@@ -190,7 +199,8 @@ export function PromptsPage() {
 
       {/* Status bar */}
       <div className="mb-4 p-3 rounded-lg bg-muted/50 border text-sm text-muted-foreground">
-        共 {promptList.length} 个提示词 · {enabledPrompt
+        共 {promptList.length} 个提示词 ·{" "}
+        {enabledPrompt
           ? `当前启用: ${enabledPrompt[1].name}`
           : "暂无启用的提示词"}
       </div>
@@ -208,14 +218,18 @@ export function PromptsPage() {
                 className="p-1.5 rounded hover:bg-muted"
                 title={`从 ${currentApp.filename} 导入`}
               >
-                <Download className={cn("h-4 w-4", importing && "animate-pulse")} />
+                <Download
+                  className={cn("h-4 w-4", importing && "animate-pulse")}
+                />
               </button>
               <button
                 onClick={reload}
                 className="p-1.5 rounded hover:bg-muted"
                 title="刷新"
               >
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                <RefreshCw
+                  className={cn("h-4 w-4", loading && "animate-spin")}
+                />
               </button>
               <button
                 onClick={handleCreateNew}
@@ -252,7 +266,7 @@ export function PromptsPage() {
                     "p-3 rounded-lg cursor-pointer transition-colors relative",
                     selectedPromptId === id
                       ? "bg-primary/10 border border-primary"
-                      : "hover:bg-muted border border-transparent"
+                      : "hover:bg-muted border border-transparent",
                   )}
                 >
                   <div className="flex items-center gap-3">
@@ -309,7 +323,9 @@ export function PromptsPage() {
                         <span className="text-muted-foreground">启用</span>
                         <ToggleSwitch
                           enabled={selectedPrompt.enabled}
-                          onChange={(enabled) => handleToggle(selectedPromptId!, enabled)}
+                          onChange={(enabled) =>
+                            handleToggle(selectedPromptId!, enabled)
+                          }
                         />
                       </div>
                       <button
@@ -319,9 +335,13 @@ export function PromptsPage() {
                           "p-1.5 rounded",
                           selectedPrompt.enabled
                             ? "opacity-30 cursor-not-allowed"
-                            : "hover:bg-destructive/10 text-destructive"
+                            : "hover:bg-destructive/10 text-destructive",
                         )}
-                        title={selectedPrompt.enabled ? "无法删除已启用的提示词" : "删除"}
+                        title={
+                          selectedPrompt.enabled
+                            ? "无法删除已启用的提示词"
+                            : "删除"
+                        }
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -331,7 +351,9 @@ export function PromptsPage() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium mb-1">名称</label>
+                    <label className="block text-sm font-medium mb-1">
+                      名称
+                    </label>
                     <input
                       type="text"
                       value={editName}
@@ -341,7 +363,9 @@ export function PromptsPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium mb-1">描述</label>
+                    <label className="block text-sm font-medium mb-1">
+                      描述
+                    </label>
                     <input
                       type="text"
                       value={editDescription}
@@ -355,7 +379,8 @@ export function PromptsPage() {
 
               <div className="flex-1 p-4 flex flex-col min-h-0">
                 <label className="block text-sm font-medium mb-2">
-                  内容 <span className="text-xs text-muted-foreground font-normal">
+                  内容{" "}
+                  <span className="text-xs text-muted-foreground font-normal">
                     (启用后将同步到 {currentApp.filename})
                   </span>
                 </label>
