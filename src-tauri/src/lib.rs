@@ -6,6 +6,7 @@ mod database;
 pub mod injection;
 mod logger;
 mod models;
+pub mod plugin;
 mod providers;
 pub mod resilience;
 mod router;
