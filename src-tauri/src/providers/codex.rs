@@ -17,6 +17,7 @@ const OPENAI_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const OPENAI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_CALLBACK_PORT: u16 = 1455;
 const CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+const DEFAULT_API_BASE_URL: &str = "https://api.openai.com";
 
 /// Codex OAuth credentials storage
 ///
@@ -26,6 +27,10 @@ const CODEX_API_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 /// Supports multiple field name formats:
 /// - snake_case: `refresh_token`, `access_token`, `id_token`, `account_id`, `last_refresh`
 /// - camelCase: `refreshToken`, `accessToken`, `idToken`, `accountId`, `lastRefresh`
+///
+/// 同时兼容 Codex CLI 的 API Key 登录格式：
+/// - `api_key` / `apiKey`
+/// - `api_base_url` / `apiBaseUrl`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodexCredentials {
     /// JWT ID token containing user claims
@@ -45,6 +50,12 @@ pub struct CodexCredentials {
         alias = "refreshToken"
     )]
     pub refresh_token: Option<String>,
+    /// API Key（Codex CLI 支持通过 API Key 登录）
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "apiKey")]
+    pub api_key: Option<String>,
+    /// API Base URL（可选）
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "apiBaseUrl")]
+    pub api_base_url: Option<String>,
     /// OpenAI account identifier
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "accountId")]
     pub account_id: Option<String>,
@@ -83,6 +94,8 @@ impl Default for CodexCredentials {
             id_token: None,
             access_token: None,
             refresh_token: None,
+            api_key: None,
+            api_base_url: None,
             account_id: None,
             last_refresh: None,
             email: None,
@@ -428,6 +441,24 @@ impl CodexProvider {
         CODEX_API_BASE_URL
     }
 
+    /// 获取已配置的 API Key（trim 后的非空值）
+    fn get_api_key(&self) -> Option<&str> {
+        self.credentials
+            .api_key
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn build_responses_url(base_url: &str) -> String {
+        let base = base_url.trim_end_matches('/');
+        if base.ends_with("/v1") {
+            format!("{}/responses", base)
+        } else {
+            format!("{}/v1/responses", base)
+        }
+    }
+
     /// Load credentials from the default path
     pub async fn load_credentials(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let path = Self::default_creds_path();
@@ -457,9 +488,14 @@ impl CodexProvider {
             })?;
 
             // 检查关键字段
-            if creds.refresh_token.is_none() {
+            let has_api_key = creds
+                .api_key
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            if creds.refresh_token.is_none() && !has_api_key {
                 tracing::warn!(
-                    "[CODEX] 凭证文件缺少 refresh_token 字段。支持的字段名: refresh_token, refreshToken"
+                    "[CODEX] 凭证文件缺少 refresh_token/api_key 字段。支持的字段名: refresh_token, refreshToken, api_key, apiKey"
                 );
                 // 打印文件中的顶级字段名，帮助调试
                 if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -471,9 +507,10 @@ impl CodexProvider {
             }
 
             tracing::info!(
-                "[CODEX] 凭证加载成功: has_access={}, has_refresh={}, email={:?}, path={:?}",
+                "[CODEX] 凭证加载成功: has_access={}, has_refresh={}, has_api_key={}, email={:?}, path={:?}",
                 creds.access_token.is_some(),
                 creds.refresh_token.is_some(),
+                has_api_key,
                 creds.email,
                 path
             );
@@ -505,6 +542,11 @@ impl CodexProvider {
 
     /// Check if the access token is expired
     pub fn is_token_expired(&self) -> bool {
+        // API Key 模式：不涉及过期概念
+        if self.get_api_key().is_some() {
+            return false;
+        }
+
         if let Some(expires_str) = &self.credentials.expires_at {
             if let Ok(expires) = chrono::DateTime::parse_from_rfc3339(expires_str) {
                 let now = chrono::Utc::now();
@@ -518,6 +560,9 @@ impl CodexProvider {
 
     /// Check if credentials are valid (has access token and not expired)
     pub fn is_valid(&self) -> bool {
+        if self.get_api_key().is_some() {
+            return true;
+        }
         self.credentials.access_token.is_some() && !self.is_token_expired()
     }
 
@@ -608,6 +653,8 @@ impl CodexProvider {
             id_token,
             access_token: Some(access_token),
             refresh_token,
+            api_key: None,
+            api_base_url: None,
             account_id,
             last_refresh: Some(chrono::Utc::now().to_rfc3339()),
             email,
@@ -627,10 +674,15 @@ impl CodexProvider {
 
     /// Refresh the access token using the refresh token
     pub async fn refresh_token(&mut self) -> Result<String, Box<dyn Error + Send + Sync>> {
+        // API Key 模式无需刷新
+        if let Some(api_key) = self.get_api_key() {
+            return Ok(api_key.to_string());
+        }
+
         let refresh_token = self.credentials.refresh_token.as_ref().ok_or_else(|| {
             create_config_error(
-                "没有可用的 refresh_token。请确保凭证文件包含 refresh_token 或 refreshToken 字段，\
-                    或使用 OAuth 登录功能重新获取凭证",
+                "没有可用的 refresh_token 或 api_key。请确保凭证文件包含 refresh_token/refreshToken 或 api_key/apiKey 字段，\
+                    或使用 OAuth 登录功能重新获取凭证（需要 refresh_token）",
             )
         })?;
 
@@ -768,6 +820,11 @@ impl CodexProvider {
 
     /// Check if token needs refresh (expiring within the specified duration)
     pub fn needs_refresh(&self, lead_time: chrono::Duration) -> bool {
+        // API Key 模式无需刷新
+        if self.get_api_key().is_some() {
+            return false;
+        }
+
         if self.credentials.access_token.is_none() {
             return true;
         }
@@ -788,6 +845,11 @@ impl CodexProvider {
     /// This is the recommended method to call before making API requests.
     /// It will automatically refresh the token if it's expired or about to expire.
     pub async fn ensure_valid_token(&mut self) -> Result<String, Box<dyn Error + Send + Sync>> {
+        // 兼容 Codex CLI 的 API Key 登录：auth.json 只有 api_key，没有 refresh_token
+        if let Some(api_key) = self.get_api_key() {
+            return Ok(api_key.to_string());
+        }
+
         // Refresh if token expires within 5 minutes
         let lead_time = chrono::Duration::minutes(5);
 
@@ -811,6 +873,11 @@ impl CodexProvider {
 
     /// Get the access token, refreshing if necessary
     pub async fn get_access_token(&mut self) -> Result<String, Box<dyn Error + Send + Sync>> {
+        // API Key 模式直接返回
+        if let Some(api_key) = self.get_api_key() {
+            return Ok(api_key.to_string());
+        }
+
         if self.is_token_expired() {
             self.refresh_token().await?;
         }
@@ -919,42 +986,68 @@ impl CodexProvider {
         &self,
         request: &serde_json::Value,
     ) -> Result<reqwest::Response, Box<dyn Error + Send + Sync>> {
-        let token = self
-            .credentials
-            .access_token
-            .as_ref()
-            .ok_or("No access token available")?;
+        enum AuthMode {
+            ApiKey,
+            OAuth,
+        }
+
+        let (token, mode) = match self.get_api_key() {
+            Some(api_key) => (api_key, AuthMode::ApiKey),
+            None => (
+                self.credentials
+                    .access_token
+                    .as_deref()
+                    .ok_or("No access token or api_key available")?,
+                AuthMode::OAuth,
+            ),
+        };
 
         // Build the Codex API URL
-        let url = format!("{}/responses", CODEX_API_BASE_URL);
+        let url = match mode {
+            AuthMode::ApiKey => {
+                let base_url = self
+                    .credentials
+                    .api_base_url
+                    .as_deref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(DEFAULT_API_BASE_URL);
+                Self::build_responses_url(base_url)
+            }
+            AuthMode::OAuth => format!("{}/responses", CODEX_API_BASE_URL),
+        };
 
         // Transform OpenAI chat completion request to Codex format
         let codex_request = transform_to_codex_format(request)?;
 
         tracing::debug!("[CODEX] Calling API: {}", url);
 
-        let resp = self
+        let mut req = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
-            .header("Version", "0.21.0")
             .header("Openai-Beta", "responses=experimental")
-            .header(
-                "User-Agent",
-                "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
-            )
-            .header("Originator", "codex_cli_rs")
-            .header("Session_id", uuid::Uuid::new_v4().to_string())
-            // Add account ID header if available
-            .header(
-                "Chatgpt-Account-Id",
-                self.credentials.account_id.as_deref().unwrap_or(""),
-            )
-            .json(&codex_request)
-            .send()
-            .await?;
+            .json(&codex_request);
+
+        if matches!(mode, AuthMode::OAuth) {
+            req = req
+                .header("Version", "0.21.0")
+                .header(
+                    "User-Agent",
+                    "codex_cli_rs/0.50.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464",
+                )
+                .header("Originator", "codex_cli_rs")
+                .header("Session_id", uuid::Uuid::new_v4().to_string())
+                // Add account ID header if available
+                .header(
+                    "Chatgpt-Account-Id",
+                    self.credentials.account_id.as_deref().unwrap_or(""),
+                );
+        }
+
+        let resp = req.send().await?;
 
         Ok(resp)
     }
@@ -1163,6 +1256,7 @@ mod tests {
         let creds = CodexCredentials::default();
         assert!(creds.access_token.is_none());
         assert!(creds.refresh_token.is_none());
+        assert!(creds.api_key.is_none());
         assert_eq!(creds.r#type, "codex");
     }
 
@@ -1233,6 +1327,32 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_credentials_api_key_fields() {
+        let json = r#"{
+            "api_key": "sk-test",
+            "api_base_url": "https://api.openai.com/v1"
+        }"#;
+
+        let creds: CodexCredentials = serde_json::from_str(json).unwrap();
+        assert_eq!(creds.api_key, Some("sk-test".to_string()));
+        assert_eq!(
+            creds.api_base_url,
+            Some("https://api.openai.com/v1".to_string())
+        );
+
+        let json2 = r#"{
+            "apiKey": "sk-test-2",
+            "apiBaseUrl": "https://example.com/v1"
+        }"#;
+        let creds2: CodexCredentials = serde_json::from_str(json2).unwrap();
+        assert_eq!(creds2.api_key, Some("sk-test-2".to_string()));
+        assert_eq!(
+            creds2.api_base_url,
+            Some("https://example.com/v1".to_string())
+        );
+    }
+
+    #[test]
     fn test_codex_credentials_expires_at_alias() {
         // 测试 expires_at 字段的多种别名
         let json1 = r#"{"expired": "2024-12-31T23:59:59Z"}"#;
@@ -1262,6 +1382,31 @@ mod tests {
         let provider = CodexProvider::new();
         assert_eq!(provider.callback_port, DEFAULT_CALLBACK_PORT);
         assert!(provider.credentials.access_token.is_none());
+    }
+
+    #[test]
+    fn test_build_responses_url() {
+        assert_eq!(
+            CodexProvider::build_responses_url("https://api.openai.com"),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            CodexProvider::build_responses_url("https://api.openai.com/v1"),
+            "https://api.openai.com/v1/responses"
+        );
+        assert_eq!(
+            CodexProvider::build_responses_url("https://example.com/v1/"),
+            "https://example.com/v1/responses"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ensure_valid_token_prefers_api_key() {
+        let mut provider = CodexProvider::new();
+        provider.credentials.api_key = Some("sk-test".to_string());
+
+        let token = provider.ensure_valid_token().await.unwrap();
+        assert_eq!(token, "sk-test");
     }
 
     #[test]
@@ -1342,7 +1487,12 @@ mod tests {
         // No expiry - should be considered expired
         assert!(provider.is_token_expired());
 
+        // API Key 模式 - 不应视为过期
+        provider.credentials.api_key = Some("sk-test".to_string());
+        assert!(!provider.is_token_expired());
+
         // Expired token
+        provider.credentials.api_key = None;
         provider.credentials.expires_at = Some("2020-01-01T00:00:00Z".to_string());
         assert!(provider.is_token_expired());
 

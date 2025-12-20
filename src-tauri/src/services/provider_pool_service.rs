@@ -852,28 +852,15 @@ impl ProviderPoolService {
             .map_err(|e| format!("获取 Codex Token 失败: {}", e))?;
 
         // 使用 OpenAI 兼容 API 进行健康检查
-        let url = "https://api.openai.com/v1/chat/completions";
-        let request_body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Say OK"}],
-            "max_tokens": 10
-        });
+        // 兼容 Codex CLI API Key 模式：如果 auth.json 提供 api_base_url，则优先使用
+        let base_url = provider
+            .credentials
+            .api_base_url
+            .as_deref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty());
 
-        let response = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&request_body)
-            .timeout(self.health_check_timeout)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {}", e))?;
-
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("HTTP {}", response.status()))
-        }
+        self.check_openai_health(&token, base_url, model).await
     }
 
     // Claude OAuth 健康检查
@@ -1078,11 +1065,19 @@ impl ProviderPoolService {
         let creds: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析凭证文件失败: {}", e))?;
 
-        let has_access_token = creds
+        let has_api_key = creds
+            .get("apiKey")
+            .or_else(|| creds.get("api_key"))
+            .map(|v| v.as_str().is_some())
+            .unwrap_or(false);
+
+        let has_oauth_access_token = creds
             .get("accessToken")
             .or_else(|| creds.get("access_token"))
             .map(|v| v.as_str().is_some())
             .unwrap_or(false);
+
+        let has_access_token = has_oauth_access_token || has_api_key;
 
         let has_refresh_token = creds
             .get("refreshToken")
@@ -1112,6 +1107,20 @@ impl ProviderPoolService {
                     (is_valid, Some(expiry_str))
                 } else {
                     (has_access_token, None)
+                }
+            }
+            "codex" => {
+                // Codex: 兼容 OAuth token 或 Codex CLI 的 API Key 登录
+                if has_api_key {
+                    (true, None)
+                } else {
+                    let expires_at = creds
+                        .get("expiresAt")
+                        .or_else(|| creds.get("expires_at"))
+                        .or_else(|| creds.get("expired"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string());
+                    (has_oauth_access_token, expires_at)
                 }
             }
             _ => (has_access_token, None),
