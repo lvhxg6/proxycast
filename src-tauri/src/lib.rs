@@ -1365,7 +1365,7 @@ pub fn run() {
     if config.server.api_key == config::DEFAULT_API_KEY {
         let new_key = generate_api_key();
         config.server.api_key = new_key.clone();
-        if let Err(err) = config::save_config_yaml(&config) {
+        if let Err(err) = config::save_config(&config) {
             tracing::error!("自动生成 API key 失败，无法保存配置，已中止启动: {}", err);
             eprintln!("自动生成 API key 失败，无法保存配置，已中止启动: {}", err);
             return;

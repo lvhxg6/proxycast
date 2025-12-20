@@ -678,8 +678,12 @@ pub fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
     Ok(Config::default())
 }
 
-/// 保存配置（向后兼容，使用 JSON 格式）
+/// 保存配置（同时写入 YAML 与 JSON，兼容旧版）
 pub fn save_config(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    // 主配置优先写入 YAML
+    save_config_yaml(config)?;
+
+    // 兼容旧版 JSON 配置
     let path = json_config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
