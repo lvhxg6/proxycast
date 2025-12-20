@@ -315,7 +315,7 @@ export function ProviderForm({
       return {
         apiKey: "",
         baseUrl: "",
-        primaryModel: "claude-sonnet-4-20250514",
+        primaryModel: "",
         haikuModel: "",
         sonnetModel: "",
         opusModel: "",
@@ -328,7 +328,7 @@ export function ProviderForm({
       return {
         apiKey: "",
         baseUrl: "",
-        primaryModel: "claude-sonnet-4-20250514",
+        primaryModel: "",
         haikuModel: "",
         sonnetModel: "",
         opusModel: "",
@@ -337,7 +337,7 @@ export function ProviderForm({
     return {
       apiKey: env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || "",
       baseUrl: env.ANTHROPIC_BASE_URL || "",
-      primaryModel: env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514",
+      primaryModel: env.ANTHROPIC_MODEL || "",
       haikuModel: env.ANTHROPIC_DEFAULT_HAIKU_MODEL || "",
       sonnetModel: env.ANTHROPIC_DEFAULT_SONNET_MODEL || "",
       opusModel: env.ANTHROPIC_DEFAULT_OPUS_MODEL || "",
