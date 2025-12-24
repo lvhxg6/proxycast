@@ -155,8 +155,8 @@ export function FlowMonitorPage() {
   return (
     <div className="space-y-6">
       {/* 页面头部 */}
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="shrink-0">
           <h2 className="text-2xl font-bold flex items-center gap-2">
             <Activity className="h-6 w-6" />
             Flow Monitor
@@ -165,7 +165,7 @@ export function FlowMonitorPage() {
             监控和分析 LLM API 请求/响应流量
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* 视图切换 */}
           <div className="flex items-center rounded-lg border p-1">
             <button
@@ -259,10 +259,10 @@ export function FlowMonitorPage() {
           {/* 清理按钮 */}
           <button
             onClick={() => setCleanupDialogOpen(true)}
-            className="flex items-center gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-muted text-red-600 hover:bg-red-50 hover:border-red-300 dark:text-red-400 dark:hover:bg-red-950/20"
+            className="flex items-center gap-1 rounded-lg border px-3 py-2 text-sm hover:bg-muted"
             title="清理日志数据"
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash2 className="h-4 w-4 text-red-500" />
             清理
           </button>
 

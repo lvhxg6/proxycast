@@ -504,8 +504,8 @@ pub async fn cleanup_flows(
     // 根据清理类型执行不同的清理逻辑
     match request.cleanup_type {
         CleanupType::All => {
-            // 清理所有数据 - 使用一个很早的时间点来清理所有数据
-            let before = chrono::Utc::now() - chrono::Duration::days(36500); // 100年前
+            // 清理所有数据 - 使用当前时间 + 1天，确保删除所有数据
+            let before = chrono::Utc::now() + chrono::Duration::days(1);
 
             if let Some(file_store) = monitor.0.file_store() {
                 match file_store.cleanup(before) {
