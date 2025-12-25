@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// 机器码信息结构
+/// 机器码信息结构 - v0.20.0
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineIdInfo {
     /// 当前机器码
