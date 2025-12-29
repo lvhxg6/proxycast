@@ -228,9 +228,9 @@ const recommendedPlugins: RecommendedPlugin[] = [
     name: "机器码管理工具",
     description: "查看、修改和管理系统机器码，支持跨平台操作",
     icon: "Cpu",
-    // 插件包从 ProxyCast release 下载
+    // 插件包从 MachineIdTool 仓库 release 下载
     downloadUrl:
-      "https://github.com/aiclientproxy/proxycast/releases/latest/download/machine-id-tool.zip",
+      "https://github.com/aiclientproxy/MachineIdTool/releases/latest/download/machine-id-tool-plugin.zip",
   },
 ];
 
