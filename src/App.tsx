@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import styled from "styled-components";
+import { withI18nPatch } from "./i18n/withI18nPatch";
 import { SplashScreen } from "./components/SplashScreen";
 import { AppSidebar } from "./components/AppSidebar";
 import { SettingsPage } from "./components/settings";
@@ -81,7 +82,7 @@ const FullscreenWrapper = styled.div`
   position: relative;
 `;
 
-function App() {
+function AppContent() {
   const [showSplash, setShowSplash] = useState(true);
   const [currentPage, setCurrentPage] = useState<Page>("agent");
   const { needsOnboarding, completeOnboarding } = useOnboardingState();
@@ -262,4 +263,6 @@ function App() {
   );
 }
 
+// Export the App component wrapped with i18n patch support
+const App = withI18nPatch(AppContent);
 export default App;
