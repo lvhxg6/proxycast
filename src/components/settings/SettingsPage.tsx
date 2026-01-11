@@ -7,22 +7,28 @@ import { TlsSettings } from "./TlsSettings";
 import { QuotaSettings } from "./QuotaSettings";
 import { RemoteManagementSettings } from "./RemoteManagementSettings";
 import { ExtensionsSettings } from "./ExtensionsSettings";
-import { RoutingSettings } from "./RoutingSettings";
+import { DeveloperSettings } from "./DeveloperSettings";
+import { ConnectionsSettings } from "./ConnectionsSettings";
+import { ExperimentalSettings } from "./ExperimentalSettings";
 
 type SettingsTab =
   | "general"
+  | "connections"
   | "security"
   | "advanced"
   | "extensions"
-  | "routing"
+  | "experimental"
+  | "developer"
   | "about";
 
 const tabs: { id: SettingsTab; label: string; experimental?: boolean }[] = [
   { id: "general", label: "通用" },
+  { id: "connections", label: "连接" },
   { id: "security", label: "安全" },
   { id: "advanced", label: "高级" },
   { id: "extensions", label: "扩展", experimental: true },
-  { id: "routing", label: "路由管理", experimental: true },
+  { id: "experimental", label: "实验室", experimental: true },
+  { id: "developer", label: "开发者" },
   { id: "about", label: "关于" },
 ];
 
@@ -63,6 +69,7 @@ export function SettingsPage() {
       {/* 内容区域 */}
       <div className="flex-1 overflow-auto">
         {activeTab === "general" && <GeneralSettings />}
+        {activeTab === "connections" && <ConnectionsSettings />}
         {activeTab === "security" && (
           <div className="space-y-6 max-w-2xl">
             <TlsSettings />
@@ -76,7 +83,8 @@ export function SettingsPage() {
           </div>
         )}
         {activeTab === "extensions" && <ExtensionsSettings />}
-        {activeTab === "routing" && <RoutingSettings />}
+        {activeTab === "experimental" && <ExperimentalSettings />}
+        {activeTab === "developer" && <DeveloperSettings />}
         {activeTab === "about" && <AboutSection />}
       </div>
     </div>

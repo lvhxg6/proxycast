@@ -176,6 +176,52 @@ impl OpenAIProtocol {
                     );
                     buffer.push_str(&text);
 
+                    // 检查是否是非流式响应（直接返回完整 JSON）
+                    // 非流式响应以 { 开头，不是 SSE 格式
+                    if buffer.trim().starts_with('{') && !buffer.contains("data: ") {
+                        // 尝试解析为完整的 ChatCompletionResponse
+                        if let Ok(response) = serde_json::from_str::<
+                            crate::models::openai::ChatCompletionResponse,
+                        >(&buffer)
+                        {
+                            eprintln!("[OpenAIProtocol] 检测到非流式响应，直接解析");
+
+                            let content = response
+                                .choices
+                                .first()
+                                .and_then(|c| c.message.content.clone())
+                                .unwrap_or_default();
+
+                            // 发送完整内容作为 TextDelta
+                            if !content.is_empty() {
+                                let _ = tx
+                                    .send(StreamEvent::TextDelta {
+                                        text: content.clone(),
+                                    })
+                                    .await;
+                            }
+
+                            let usage = Some(crate::agent::types::TokenUsage {
+                                input_tokens: response.usage.prompt_tokens,
+                                output_tokens: response.usage.completion_tokens,
+                            });
+
+                            if send_done {
+                                let _ = tx
+                                    .send(StreamEvent::Done {
+                                        usage: usage.clone(),
+                                    })
+                                    .await;
+                            }
+
+                            return Ok(StreamResult {
+                                content,
+                                tool_calls: None,
+                                usage,
+                            });
+                        }
+                    }
+
                     // 处理完整的 SSE 事件（以 \n\n 分隔）
                     while let Some(pos) = buffer.find("\n\n") {
                         let event = buffer[..pos].to_string();
@@ -233,6 +279,48 @@ impl OpenAIProtocol {
         }
 
         // 流正常结束但没有收到 [DONE]
+        // 检查 buffer 中是否还有未处理的非流式响应
+        if !buffer.trim().is_empty() && buffer.trim().starts_with('{') {
+            if let Ok(response) =
+                serde_json::from_str::<crate::models::openai::ChatCompletionResponse>(&buffer)
+            {
+                eprintln!("[OpenAIProtocol] 流结束时检测到非流式响应");
+
+                let content = response
+                    .choices
+                    .first()
+                    .and_then(|c| c.message.content.clone())
+                    .unwrap_or_default();
+
+                if !content.is_empty() {
+                    let _ = tx
+                        .send(StreamEvent::TextDelta {
+                            text: content.clone(),
+                        })
+                        .await;
+                }
+
+                let usage = Some(crate::agent::types::TokenUsage {
+                    input_tokens: response.usage.prompt_tokens,
+                    output_tokens: response.usage.completion_tokens,
+                });
+
+                if send_done {
+                    let _ = tx
+                        .send(StreamEvent::Done {
+                            usage: usage.clone(),
+                        })
+                        .await;
+                }
+
+                return Ok(StreamResult {
+                    content,
+                    tool_calls: None,
+                    usage,
+                });
+            }
+        }
+
         let full_content = parser.get_full_content();
         let tool_calls = if parser.has_tool_calls() {
             Some(parser.finalize_tool_calls())
@@ -270,12 +358,14 @@ impl Protocol for OpenAIProtocol {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String> {
         info!(
-            "[OpenAIProtocol] 发送流式请求: model={}, history_len={}, tools_count={}",
+            "[OpenAIProtocol] 发送流式请求: model={}, history_len={}, tools_count={}, provider_id={:?}",
             model,
             messages.len(),
-            tools.map(|t| t.len()).unwrap_or(0)
+            tools.map(|t| t.len()).unwrap_or(0),
+            provider_id
         );
 
         let chat_messages = Self::build_messages(messages, user_message, images, config);
@@ -299,21 +389,24 @@ impl Protocol for OpenAIProtocol {
         let url = format!("{}{}", base_url, self.endpoint());
 
         eprintln!(
-            "[OpenAIProtocol] 发送请求到: {} model={} stream={}",
-            url, model, request.stream
+            "[OpenAIProtocol] 发送请求到: {} model={} stream={} provider_id={:?}",
+            url, model, request.stream, provider_id
         );
 
-        let response = client
+        let mut req_builder = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| {
-                eprintln!("[OpenAIProtocol] 请求发送失败: {}", e);
-                format!("请求失败: {}", e)
-            })?;
+            .header("Content-Type", "application/json");
+
+        // 添加 X-Provider-Id header 用于精确路由
+        if let Some(pid) = provider_id {
+            req_builder = req_builder.header("X-Provider-Id", pid);
+        }
+
+        let response = req_builder.json(&request).send().await.map_err(|e| {
+            eprintln!("[OpenAIProtocol] 请求发送失败: {}", e);
+            format!("请求失败: {}", e)
+        })?;
 
         let status = response.status();
         eprintln!("[OpenAIProtocol] 响应状态: {}", status);
@@ -341,12 +434,14 @@ impl Protocol for OpenAIProtocol {
         config: &AgentConfig,
         tools: Option<&[Tool]>,
         tx: mpsc::Sender<StreamEvent>,
+        provider_id: Option<&str>,
     ) -> Result<StreamResult, String> {
         debug!(
-            "[OpenAIProtocol] 继续流式对话: model={}, history_len={}, tools_count={}",
+            "[OpenAIProtocol] 继续流式对话: model={}, history_len={}, tools_count={}, provider_id={:?}",
             model,
             messages.len(),
-            tools.map(|t| t.len()).unwrap_or(0)
+            tools.map(|t| t.len()).unwrap_or(0),
+            provider_id
         );
 
         let chat_messages = Self::build_messages_from_history(messages, config);
@@ -369,10 +464,17 @@ impl Protocol for OpenAIProtocol {
 
         let url = format!("{}{}", base_url, self.endpoint());
 
-        let response = client
+        let mut req_builder = client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        // 添加 X-Provider-Id header 用于精确路由
+        if let Some(pid) = provider_id {
+            req_builder = req_builder.header("X-Provider-Id", pid);
+        }
+
+        let response = req_builder
             .json(&request)
             .send()
             .await

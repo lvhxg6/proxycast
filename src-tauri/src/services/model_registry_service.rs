@@ -1,20 +1,91 @@
 //! 模型注册服务
 //!
-//! 负责从 models.dev API 获取模型数据、管理本地缓存、提供模型搜索等功能
+//! 从内嵌资源加载模型数据，管理本地缓存，提供模型搜索等功能
+//! 模型数据在构建时从 aiclientproxy/models 仓库打包进应用
 
-use crate::data::get_local_models;
 use crate::database::DbConnection;
 use crate::models::model_registry::{
-    EnhancedModelMetadata, ModelSource, ModelStatus, ModelSyncState, ModelTier, ModelsDevProvider,
-    UserModelPreference,
+    EnhancedModelMetadata, ModelCapabilities, ModelLimits, ModelPricing, ModelSource, ModelStatus,
+    ModelSyncState, ModelTier, ProviderAliasConfig, UserModelPreference,
 };
 use rusqlite::params;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
-const CACHE_DURATION_SECS: i64 = 3600; // 1 小时
+/// 内嵌的模型资源目录名（相对于 resource_dir）
+/// 对应 tauri.conf.json 中的 "resources/models/**/*"
+const MODELS_RESOURCE_DIR: &str = "resources/models";
+
+/// 仓库索引文件结构
+#[derive(Debug, Deserialize)]
+struct RepoIndex {
+    providers: Vec<String>,
+    #[allow(dead_code)]
+    total_models: u32,
+}
+
+/// 仓库中的 Provider 数据结构
+#[derive(Debug, Deserialize)]
+struct RepoProviderData {
+    provider: RepoProvider,
+    models: Vec<RepoModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoProvider {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoModel {
+    id: String,
+    name: String,
+    family: Option<String>,
+    tier: Option<String>,
+    capabilities: Option<RepoCapabilities>,
+    pricing: Option<RepoPricing>,
+    limits: Option<RepoLimits>,
+    status: Option<String>,
+    release_date: Option<String>,
+    is_latest: Option<bool>,
+    description: Option<String>,
+    #[serde(default)]
+    description_zh: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RepoCapabilities {
+    #[serde(default)]
+    vision: bool,
+    #[serde(default)]
+    tools: bool,
+    #[serde(default)]
+    streaming: bool,
+    #[serde(default)]
+    json_mode: bool,
+    #[serde(default)]
+    function_calling: bool,
+    #[serde(default)]
+    reasoning: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoPricing {
+    input: Option<f64>,
+    output: Option<f64>,
+    cache_read: Option<f64>,
+    cache_write: Option<f64>,
+    currency: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RepoLimits {
+    context: Option<u32>,
+    max_output: Option<u32>,
+}
 
 /// 模型注册服务
 pub struct ModelRegistryService {
@@ -22,8 +93,12 @@ pub struct ModelRegistryService {
     db: DbConnection,
     /// 内存缓存的模型数据
     models_cache: Arc<RwLock<Vec<EnhancedModelMetadata>>>,
+    /// Provider 别名配置缓存（provider_id -> ProviderAliasConfig）
+    aliases_cache: Arc<RwLock<HashMap<String, ProviderAliasConfig>>>,
     /// 同步状态
     sync_state: Arc<RwLock<ModelSyncState>>,
+    /// 资源目录路径
+    resource_dir: Option<std::path::PathBuf>,
 }
 
 impl ModelRegistryService {
@@ -32,222 +107,274 @@ impl ModelRegistryService {
         Self {
             db,
             models_cache: Arc::new(RwLock::new(Vec::new())),
+            aliases_cache: Arc::new(RwLock::new(HashMap::new())),
             sync_state: Arc::new(RwLock::new(ModelSyncState::default())),
+            resource_dir: None,
         }
     }
 
-    /// 初始化服务
+    /// 设置资源目录路径
+    pub fn set_resource_dir(&mut self, path: std::path::PathBuf) {
+        self.resource_dir = Some(path);
+    }
+
+    /// 初始化服务 - 从内嵌资源加载模型数据
     pub async fn initialize(&self) -> Result<(), String> {
         tracing::info!("[ModelRegistry] 初始化模型注册服务");
 
-        // 1. 尝试从数据库加载缓存
-        match self.load_from_db().await {
-            Ok(models) if !models.is_empty() => {
-                tracing::info!("[ModelRegistry] 从数据库加载了 {} 个模型", models.len());
-                let mut cache = self.models_cache.write().await;
-                *cache = models;
+        // 始终从内嵌资源加载，不再回退到数据库
+        let (models, aliases) = self.load_from_embedded_resources().await?;
 
-                // 检查是否需要后台刷新
-                if self.should_refresh().await {
-                    tracing::info!("[ModelRegistry] 缓存已过期，启动后台刷新");
-                    self.spawn_background_refresh();
-                }
-                return Ok(());
-            }
-            Ok(_) => {
-                tracing::info!("[ModelRegistry] 数据库中没有缓存数据");
-            }
-            Err(e) => {
-                tracing::warn!("[ModelRegistry] 从数据库加载失败: {}", e);
-            }
-        }
-
-        // 2. 使用本地硬编码数据作为初始数据
-        let local_models = get_local_models();
         tracing::info!(
-            "[ModelRegistry] 使用 {} 个本地硬编码模型作为初始数据",
-            local_models.len()
+            "[ModelRegistry] 从内嵌资源加载了 {} 个模型, {} 个别名配置",
+            models.len(),
+            aliases.len()
         );
 
+        // 更新缓存
         {
             let mut cache = self.models_cache.write().await;
-            *cache = local_models.clone();
+            *cache = models.clone();
+        }
+        {
+            let mut cache = self.aliases_cache.write().await;
+            *cache = aliases;
         }
 
-        // 保存到数据库
-        if let Err(e) = self.save_models_to_db(&local_models).await {
-            tracing::warn!("[ModelRegistry] 保存本地模型到数据库失败: {}", e);
+        // 更新同步状态
+        {
+            let mut state = self.sync_state.write().await;
+            state.model_count = models.len() as u32;
+            state.last_sync_at = Some(chrono::Utc::now().timestamp());
+            state.is_syncing = false;
+            state.last_error = None;
         }
 
-        // 3. 后台获取 models.dev 数据
-        self.spawn_background_refresh();
+        // 保存到数据库（仅用于持久化，不影响运行时数据）
+        if let Err(e) = self.save_models_to_db(&models).await {
+            tracing::warn!("[ModelRegistry] 保存模型到数据库失败: {}", e);
+        }
 
         Ok(())
     }
 
-    /// 检查是否需要刷新
-    async fn should_refresh(&self) -> bool {
-        let state = self.sync_state.read().await;
-        match state.last_sync_at {
-            Some(last_sync) => {
-                let now = chrono::Utc::now().timestamp();
-                now - last_sync > CACHE_DURATION_SECS
-            }
-            None => true,
-        }
-    }
+    /// 从内嵌资源加载模型数据
+    async fn load_from_embedded_resources(
+        &self,
+    ) -> Result<
+        (
+            Vec<EnhancedModelMetadata>,
+            HashMap<String, ProviderAliasConfig>,
+        ),
+        String,
+    > {
+        let resource_dir = self
+            .resource_dir
+            .as_ref()
+            .ok_or_else(|| "资源目录未设置".to_string())?;
 
-    /// 启动后台刷新任务
-    fn spawn_background_refresh(&self) {
-        let db = self.db.clone();
-        let models_cache = self.models_cache.clone();
-        let sync_state = self.sync_state.clone();
+        tracing::info!("[ModelRegistry] resource_dir: {:?}", resource_dir);
 
-        tokio::spawn(async move {
-            let service = ModelRegistryService {
-                db,
-                models_cache,
-                sync_state,
-            };
-            if let Err(e) = service.refresh_from_models_dev().await {
-                tracing::error!("[ModelRegistry] 后台刷新失败: {}", e);
-            }
-        });
-    }
+        let models_dir = resource_dir.join(MODELS_RESOURCE_DIR);
+        let index_file = models_dir.join("index.json");
 
-    /// 从 models.dev API 刷新数据
-    pub async fn refresh_from_models_dev(&self) -> Result<(), String> {
-        tracing::info!("[ModelRegistry] 开始从 models.dev 获取数据");
-
-        // 设置同步状态
-        {
-            let mut state = self.sync_state.write().await;
-            state.is_syncing = true;
-            state.last_error = None;
-        }
-
-        // 获取数据
-        let result = self.fetch_models_dev_data().await;
-
-        match result {
-            Ok(models_dev_models) => {
-                // 合并本地模型
-                let local_models = get_local_models();
-                let merged = self.merge_models(models_dev_models, local_models);
-
-                tracing::info!("[ModelRegistry] 获取并合并了 {} 个模型", merged.len());
-
-                // 更新缓存
-                {
-                    let mut cache = self.models_cache.write().await;
-                    *cache = merged.clone();
-                }
-
-                // 保存到数据库
-                self.save_models_to_db(&merged).await?;
-
-                // 更新同步状态
-                {
-                    let mut state = self.sync_state.write().await;
-                    state.is_syncing = false;
-                    state.last_sync_at = Some(chrono::Utc::now().timestamp());
-                    state.model_count = merged.len() as u32;
-                    state.last_error = None;
-                }
-
-                // 保存同步状态到数据库
-                self.save_sync_state().await?;
-
-                Ok(())
-            }
-            Err(e) => {
-                tracing::error!("[ModelRegistry] 从 models.dev 获取数据失败: {}", e);
-
-                // 更新同步状态
-                {
-                    let mut state = self.sync_state.write().await;
-                    state.is_syncing = false;
-                    state.last_error = Some(e.clone());
-                }
-
-                Err(e)
-            }
-        }
-    }
-
-    /// 从 models.dev API 获取数据
-    async fn fetch_models_dev_data(&self) -> Result<Vec<EnhancedModelMetadata>, String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
-
-        let response = client
-            .get(MODELS_DEV_API_URL)
-            .header("User-Agent", "ProxyCast/1.0")
-            .send()
-            .await
-            .map_err(|e| format!("请求 models.dev 失败: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(format!("models.dev 返回错误状态码: {}", response.status()));
-        }
-
-        let data: HashMap<String, ModelsDevProvider> = response
-            .json()
-            .await
-            .map_err(|e| format!("解析 models.dev 响应失败: {}", e))?;
-
-        // 转换为内部格式
-        let mut models = Vec::new();
-        for (provider_id, provider) in data {
-            for (_, model) in provider.models {
-                let enhanced = model.to_enhanced_metadata(&provider_id, &provider.name);
-                models.push(enhanced);
-            }
-        }
-
+        tracing::info!("[ModelRegistry] models_dir: {:?}", models_dir);
         tracing::info!(
-            "[ModelRegistry] 从 models.dev 获取了 {} 个模型",
-            models.len()
+            "[ModelRegistry] index_file: {:?}, exists: {}",
+            index_file,
+            index_file.exists()
         );
 
-        Ok(models)
-    }
-
-    /// 合并 models.dev 数据和本地数据
-    fn merge_models(
-        &self,
-        models_dev: Vec<EnhancedModelMetadata>,
-        local: Vec<EnhancedModelMetadata>,
-    ) -> Vec<EnhancedModelMetadata> {
-        let mut merged: HashMap<String, EnhancedModelMetadata> = HashMap::new();
-
-        // 先添加 models.dev 数据
-        for model in models_dev {
-            merged.insert(model.id.clone(), model);
+        if !index_file.exists() {
+            return Err(format!("索引文件不存在: {:?}", index_file));
         }
 
-        // 本地数据覆盖或补充
-        for model in local {
-            // 如果 models.dev 没有这个模型，或者本地数据更新，则使用本地数据
-            if !merged.contains_key(&model.id) {
-                merged.insert(model.id.clone(), model);
+        // 1. 读取索引文件
+        let index_content =
+            std::fs::read_to_string(&index_file).map_err(|e| format!("读取索引文件失败: {}", e))?;
+        let index: RepoIndex =
+            serde_json::from_str(&index_content).map_err(|e| format!("解析索引文件失败: {}", e))?;
+
+        tracing::info!(
+            "[ModelRegistry] 索引包含 {} 个 providers",
+            index.providers.len()
+        );
+
+        // 2. 加载所有 provider 数据
+        let mut models = Vec::new();
+        let now = chrono::Utc::now().timestamp();
+        let providers_dir = models_dir.join("providers");
+
+        tracing::info!("[ModelRegistry] providers_dir: {:?}", providers_dir);
+
+        for provider_id in &index.providers {
+            let provider_file = providers_dir.join(format!("{}.json", provider_id));
+
+            if !provider_file.exists() {
+                tracing::warn!("[ModelRegistry] Provider 文件不存在: {:?}", provider_file);
+                continue;
+            }
+
+            match std::fs::read_to_string(&provider_file) {
+                Ok(content) => match serde_json::from_str::<RepoProviderData>(&content) {
+                    Ok(provider_data) => {
+                        for model in provider_data.models {
+                            let enhanced = self.convert_repo_model(
+                                model,
+                                &provider_data.provider.id,
+                                &provider_data.provider.name,
+                                now,
+                            );
+                            models.push(enhanced);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("[ModelRegistry] 解析 {} 失败: {}", provider_id, e);
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("[ModelRegistry] 读取 {} 失败: {}", provider_id, e);
+                }
             }
         }
 
-        let mut result: Vec<_> = merged.into_values().collect();
+        // 去重：优先保留 provider_id 为 "anthropic" 的模型
+        // 对于相同 ID 的模型，anthropic 官方的优先级最高
+        let mut seen_ids: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let original_count = models.len();
+
+        let mut to_keep = vec![true; models.len()];
+        for (idx, model) in models.iter().enumerate() {
+            if let Some(&existing_idx) = seen_ids.get(&model.id) {
+                // 已经有相同 ID 的模型
+                let existing_model = &models[existing_idx];
+
+                // 如果当前模型是 anthropic 官方的，替换之前的
+                if model.provider_id == "anthropic" && existing_model.provider_id != "anthropic" {
+                    to_keep[existing_idx] = false;
+                    seen_ids.insert(model.id.clone(), idx);
+                } else {
+                    // 否则保留第一个
+                    to_keep[idx] = false;
+                }
+            } else {
+                seen_ids.insert(model.id.clone(), idx);
+            }
+        }
+
+        models = models
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, model)| if to_keep[idx] { Some(model) } else { None })
+            .collect();
+
+        if models.len() < original_count {
+            tracing::warn!(
+                "[ModelRegistry] 发现 {} 个重复 ID，已去重",
+                original_count - models.len()
+            );
+        }
+
         // 按 provider_id 和 display_name 排序
-        result.sort_by(|a, b| {
+        models.sort_by(|a, b| {
             a.provider_id
                 .cmp(&b.provider_id)
                 .then(a.display_name.cmp(&b.display_name))
         });
 
-        result
+        // 3. 加载别名配置
+        let mut aliases = HashMap::new();
+        let aliases_dir = models_dir.join("aliases");
+        let alias_files = ["kiro", "antigravity"];
+
+        for alias_name in alias_files {
+            let alias_file = aliases_dir.join(format!("{}.json", alias_name));
+            if !alias_file.exists() {
+                continue;
+            }
+
+            match std::fs::read_to_string(&alias_file) {
+                Ok(content) => match serde_json::from_str::<ProviderAliasConfig>(&content) {
+                    Ok(config) => {
+                        tracing::info!(
+                            "[ModelRegistry] 加载别名配置: {} ({} 个模型)",
+                            config.provider,
+                            config.models.len()
+                        );
+                        aliases.insert(config.provider.clone(), config);
+                    }
+                    Err(e) => {
+                        tracing::warn!("[ModelRegistry] 解析别名配置 {} 失败: {}", alias_name, e);
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("[ModelRegistry] 读取别名配置 {} 失败: {}", alias_name, e);
+                }
+            }
+        }
+
+        tracing::info!("[ModelRegistry] 从内嵌资源加载了 {} 个模型", models.len());
+
+        Ok((models, aliases))
     }
 
-    /// 从数据库加载模型
+    /// 转换仓库模型格式为内部格式
+    fn convert_repo_model(
+        &self,
+        model: RepoModel,
+        provider_id: &str,
+        provider_name: &str,
+        now: i64,
+    ) -> EnhancedModelMetadata {
+        let caps = model.capabilities.unwrap_or_default();
+
+        EnhancedModelMetadata {
+            id: model.id,
+            display_name: model.name,
+            provider_id: provider_id.to_string(),
+            provider_name: provider_name.to_string(),
+            family: model.family,
+            tier: model
+                .tier
+                .and_then(|t| t.parse().ok())
+                .unwrap_or(ModelTier::Pro),
+            capabilities: ModelCapabilities {
+                vision: caps.vision,
+                tools: caps.tools,
+                streaming: caps.streaming,
+                json_mode: caps.json_mode,
+                function_calling: caps.function_calling,
+                reasoning: caps.reasoning,
+            },
+            pricing: model.pricing.map(|p| ModelPricing {
+                input_per_million: p.input,
+                output_per_million: p.output,
+                cache_read_per_million: p.cache_read,
+                cache_write_per_million: p.cache_write,
+                currency: p.currency.unwrap_or_else(|| "USD".to_string()),
+            }),
+            limits: ModelLimits {
+                context_length: model.limits.as_ref().and_then(|l| l.context),
+                max_output_tokens: model.limits.as_ref().and_then(|l| l.max_output),
+                requests_per_minute: None,
+                tokens_per_minute: None,
+            },
+            status: model
+                .status
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(ModelStatus::Active),
+            release_date: model.release_date,
+            is_latest: model.is_latest.unwrap_or(false),
+            description: model.description_zh.or(model.description),
+            source: ModelSource::Embedded,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// 从数据库加载模型（预留，将来实现从数据库加载自定义模型）
+    #[allow(dead_code)]
     async fn load_from_db(&self) -> Result<Vec<EnhancedModelMetadata>, String> {
         let (models, sync_rows) = {
             let conn = self.db.lock().map_err(|e| e.to_string())?;
@@ -331,97 +458,62 @@ impl ModelRegistryService {
 
     /// 保存模型到数据库
     async fn save_models_to_db(&self, models: &[EnhancedModelMetadata]) -> Result<(), String> {
-        let conn = self.db.lock().map_err(|e| e.to_string())?;
+        let mut conn = self.db.lock().map_err(|e| e.to_string())?;
 
-        // 开始事务
-        conn.execute("BEGIN TRANSACTION", [])
-            .map_err(|e| e.to_string())?;
+        // 使用 rusqlite 的事务 API
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
 
         // 清空现有数据
-        conn.execute("DELETE FROM model_registry", [])
+        tx.execute("DELETE FROM model_registry", [])
             .map_err(|e| e.to_string())?;
 
-        // 插入新数据
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO model_registry (
-                    id, display_name, provider_id, provider_name, family, tier,
-                    capabilities, pricing, limits, status, release_date, is_latest,
-                    description, source, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .map_err(|e| e.to_string())?;
+        // 插入新数据（使用 INSERT OR REPLACE 处理可能的重复 ID）
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT OR REPLACE INTO model_registry (
+                        id, display_name, provider_id, provider_name, family, tier,
+                        capabilities, pricing, limits, status, release_date, is_latest,
+                        description, source, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .map_err(|e| e.to_string())?;
 
-        for model in models {
-            let capabilities_json = serde_json::to_string(&model.capabilities).unwrap_or_default();
-            let pricing_json = model
-                .pricing
-                .as_ref()
-                .map(|p| serde_json::to_string(p).unwrap_or_default());
-            let limits_json = serde_json::to_string(&model.limits).unwrap_or_default();
+            for model in models {
+                let capabilities_json =
+                    serde_json::to_string(&model.capabilities).unwrap_or_default();
+                let pricing_json = model
+                    .pricing
+                    .as_ref()
+                    .map(|p| serde_json::to_string(p).unwrap_or_default());
+                let limits_json = serde_json::to_string(&model.limits).unwrap_or_default();
 
-            stmt.execute(params![
-                model.id,
-                model.display_name,
-                model.provider_id,
-                model.provider_name,
-                model.family,
-                model.tier.to_string(),
-                capabilities_json,
-                pricing_json,
-                limits_json,
-                model.status.to_string(),
-                model.release_date,
-                model.is_latest as i32,
-                model.description,
-                model.source.to_string(),
-                model.created_at,
-                model.updated_at,
-            ])
-            .map_err(|e| e.to_string())?;
+                stmt.execute(params![
+                    model.id,
+                    model.display_name,
+                    model.provider_id,
+                    model.provider_name,
+                    model.family,
+                    model.tier.to_string(),
+                    capabilities_json,
+                    pricing_json,
+                    limits_json,
+                    model.status.to_string(),
+                    model.release_date,
+                    model.is_latest as i32,
+                    model.description,
+                    model.source.to_string(),
+                    model.created_at,
+                    model.updated_at,
+                ])
+                .map_err(|e| e.to_string())?;
+            }
         }
 
         // 提交事务
-        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
 
         tracing::info!("[ModelRegistry] 保存了 {} 个模型到数据库", models.len());
-
-        Ok(())
-    }
-
-    /// 保存同步状态
-    async fn save_sync_state(&self) -> Result<(), String> {
-        let (last_sync_at, model_count, last_error) = {
-            let state = self.sync_state.read().await;
-            (
-                state.last_sync_at,
-                state.model_count,
-                state.last_error.clone(),
-            )
-        };
-
-        let conn = self.db.lock().map_err(|e| e.to_string())?;
-        let now = chrono::Utc::now().timestamp();
-
-        let mut stmt = conn
-            .prepare(
-                "INSERT OR REPLACE INTO model_sync_state (key, value, updated_at)
-                 VALUES (?, ?, ?)",
-            )
-            .map_err(|e| e.to_string())?;
-
-        if let Some(last_sync) = last_sync_at {
-            stmt.execute(params!["last_sync_at", last_sync.to_string(), now])
-                .map_err(|e| e.to_string())?;
-        }
-
-        stmt.execute(params!["model_count", model_count.to_string(), now])
-            .map_err(|e| e.to_string())?;
-
-        if let Some(ref error) = last_error {
-            stmt.execute(params!["last_error", error, now])
-                .map_err(|e| e.to_string())?;
-        }
 
         Ok(())
     }
@@ -434,6 +526,47 @@ impl ModelRegistryService {
     /// 获取同步状态
     pub async fn get_sync_state(&self) -> ModelSyncState {
         self.sync_state.read().await.clone()
+    }
+
+    /// 强制从内嵌资源重新加载模型数据
+    ///
+    /// 清除数据库缓存并重新从资源文件加载最新的模型数据
+    pub async fn force_reload(&self) -> Result<u32, String> {
+        tracing::info!("[ModelRegistry] 强制重新加载模型数据");
+
+        // 从内嵌资源加载
+        let (models, aliases) = self.load_from_embedded_resources().await?;
+
+        let model_count = models.len() as u32;
+        tracing::info!(
+            "[ModelRegistry] 从内嵌资源加载了 {} 个模型, {} 个别名配置",
+            models.len(),
+            aliases.len()
+        );
+
+        // 更新缓存
+        {
+            let mut cache = self.models_cache.write().await;
+            *cache = models.clone();
+        }
+        {
+            let mut cache = self.aliases_cache.write().await;
+            *cache = aliases;
+        }
+
+        // 更新同步状态
+        {
+            let mut state = self.sync_state.write().await;
+            state.model_count = model_count;
+            state.last_sync_at = Some(chrono::Utc::now().timestamp());
+            state.is_syncing = false;
+            state.last_error = None;
+        }
+
+        // 保存到数据库
+        self.save_models_to_db(&models).await?;
+
+        Ok(model_count)
     }
 
     /// 按 Provider 获取模型
@@ -645,5 +778,36 @@ impl ModelRegistryService {
         .map_err(|e| e.to_string())?;
 
         Ok(())
+    }
+
+    // ========== Provider 别名相关方法 ==========
+
+    /// 获取指定 Provider 的别名配置
+    pub async fn get_provider_alias_config(&self, provider: &str) -> Option<ProviderAliasConfig> {
+        self.aliases_cache.read().await.get(provider).cloned()
+    }
+
+    /// 检查指定 Provider 是否支持某个模型
+    pub async fn provider_supports_model(&self, provider: &str, model: &str) -> bool {
+        if let Some(config) = self.aliases_cache.read().await.get(provider) {
+            config.supports_model(model)
+        } else {
+            // 如果没有别名配置，默认支持所有模型
+            true
+        }
+    }
+
+    /// 获取模型在指定 Provider 中的内部名称
+    pub async fn get_model_internal_name(&self, provider: &str, model: &str) -> Option<String> {
+        self.aliases_cache
+            .read()
+            .await
+            .get(provider)
+            .and_then(|config| config.get_internal_name(model).map(|s| s.to_string()))
+    }
+
+    /// 获取所有 Provider 别名配置
+    pub async fn get_all_alias_configs(&self) -> HashMap<String, ProviderAliasConfig> {
+        self.aliases_cache.read().await.clone()
     }
 }

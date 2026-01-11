@@ -171,14 +171,21 @@ impl ApiKeyProviderService {
         self.initialize_system_providers(db)?;
 
         let conn = db.lock().map_err(|e| e.to_string())?;
-        let mut providers =
+        let providers =
             ApiKeyProviderDao::get_all_providers_with_keys(&conn).map_err(|e| e.to_string())?;
 
-        // 解密 API Keys（用于前端显示掩码）
-        for provider in &mut providers {
-            for _key in &mut provider.api_keys {
-                // 保持加密状态，前端会显示掩码
-            }
+        tracing::debug!(
+            "[ApiKeyProviderService] 获取到 {} 个 Provider",
+            providers.len()
+        );
+
+        for p in &providers {
+            tracing::debug!(
+                "[ApiKeyProviderService] Provider: id={}, name={}, api_keys={}",
+                p.provider.id,
+                p.provider.name,
+                p.api_keys.len()
+            );
         }
 
         Ok(providers)
@@ -316,6 +323,9 @@ impl ApiKeyProviderService {
     // ==================== API Key 操作 ====================
 
     /// 添加 API Key
+    ///
+    /// 当添加第一个 API Key 时，会自动启用 Provider
+    /// 使用数据库事务确保操作的原子性
     pub fn add_api_key(
         &self,
         db: &DbConnection,
@@ -323,21 +333,54 @@ impl ApiKeyProviderService {
         api_key: &str,
         alias: Option<String>,
     ) -> Result<ApiKeyEntry, String> {
+        tracing::info!(
+            "[ApiKeyProviderService] 开始添加 API Key: provider_id={}",
+            provider_id
+        );
+
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+
+        // 使用事务确保操作的原子性
+        let tx = conn
+            .transaction()
+            .map_err(|e| format!("开始事务失败: {}", e))?;
+
         // 验证 Provider 存在
-        let conn = db.lock().map_err(|e| e.to_string())?;
-        let _ = ApiKeyProviderDao::get_provider_by_id(&conn, provider_id)
+        let provider = ApiKeyProviderDao::get_provider_by_id(&tx, provider_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Provider not found: {}", provider_id))?;
 
-        // 加密 API Key
-        let encrypted_key = self.encryption.encrypt(api_key);
+        tracing::info!(
+            "[ApiKeyProviderService] 找到 Provider: name={}, id={}",
+            provider.name,
+            provider.id
+        );
+
+        // 检查 API Key 是否已存在（防重复添加）
+        let existing_keys = ApiKeyProviderDao::get_api_keys_by_provider(&tx, provider_id)
+            .map_err(|e| e.to_string())?;
+
+        tracing::info!(
+            "[ApiKeyProviderService] 当前已有 {} 个 API Key",
+            existing_keys.len()
+        );
+
+        // 检查是否有相同的 API Key（比较加密后的值）
+        let encrypted_input = self.encryption.encrypt(api_key);
+        for existing_key in &existing_keys {
+            if existing_key.api_key_encrypted == encrypted_input {
+                return Err("该 API Key 已存在".to_string());
+            }
+        }
+
+        let should_enable_provider = existing_keys.is_empty() && !provider.enabled;
 
         let now = Utc::now();
         let key = ApiKeyEntry {
             id: uuid::Uuid::new_v4().to_string(),
             provider_id: provider_id.to_string(),
-            api_key_encrypted: encrypted_key,
-            alias,
+            api_key_encrypted: encrypted_input,
+            alias: alias.clone(),
             enabled: true,
             usage_count: 0,
             error_count: 0,
@@ -345,7 +388,36 @@ impl ApiKeyProviderService {
             created_at: now,
         };
 
-        ApiKeyProviderDao::insert_api_key(&conn, &key).map_err(|e| e.to_string())?;
+        // 插入 API Key
+        ApiKeyProviderDao::insert_api_key(&tx, &key).map_err(|e| e.to_string())?;
+
+        tracing::info!(
+            "[ApiKeyProviderService] API Key 已插入: id={}, provider_id={}",
+            key.id,
+            key.provider_id
+        );
+
+        // 如果是第一个 API Key，自动启用 Provider
+        if should_enable_provider {
+            let mut updated_provider = provider;
+            updated_provider.enabled = true;
+            updated_provider.updated_at = now;
+            ApiKeyProviderDao::update_provider(&tx, &updated_provider)
+                .map_err(|e| e.to_string())?;
+            tracing::info!(
+                "[ApiKeyProviderService] 自动启用 Provider: {} (添加了第一个 API Key)",
+                provider_id
+            );
+        }
+
+        // 提交事务
+        tx.commit().map_err(|e| format!("提交事务失败: {}", e))?;
+
+        tracing::info!(
+            "[ApiKeyProviderService] 成功添加 API Key: provider={}, alias={:?}",
+            provider_id,
+            alias
+        );
 
         Ok(key)
     }
@@ -470,6 +542,53 @@ impl ApiKeyProviderService {
 
         ApiKeyProviderDao::update_api_key_usage(&conn, key_id, key.usage_count + 1, Utc::now())
             .map_err(|e| e.to_string())
+    }
+
+    /// 获取下一个可用的 API Key 以及 Provider 信息（按 provider_id 精确查找）
+    /// 用于支持 X-Provider-Id 请求头指定具体的 Provider
+    pub fn get_next_api_key_with_provider_info(
+        &self,
+        db: &DbConnection,
+        provider_id: &str,
+    ) -> Result<Option<(String, ApiKeyProvider)>, String> {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+
+        // 获取 Provider 信息
+        let provider = match ApiKeyProviderDao::get_provider_by_id(&conn, provider_id)
+            .map_err(|e| e.to_string())?
+        {
+            Some(p) => p,
+            None => return Ok(None),
+        };
+
+        // 检查 Provider 是否启用
+        if !provider.enabled {
+            return Ok(None);
+        }
+
+        // 获取该 Provider 的所有启用的 API Keys
+        let keys = ApiKeyProviderDao::get_enabled_api_keys_by_provider(&conn, provider_id)
+            .map_err(|e| e.to_string())?;
+
+        if keys.is_empty() {
+            return Ok(None);
+        }
+
+        // 获取或创建轮询索引
+        let index = {
+            let mut indices = self.round_robin_index.write().map_err(|e| e.to_string())?;
+            indices
+                .entry(provider_id.to_string())
+                .or_insert_with(|| AtomicUsize::new(0))
+                .fetch_add(1, Ordering::SeqCst)
+        };
+
+        // 选择 API Key
+        let selected_key = &keys[index % keys.len()];
+
+        // 解密并返回
+        let decrypted = self.encryption.decrypt(&selected_key.api_key_encrypted)?;
+        Ok(Some((decrypted, provider)))
     }
 
     /// 按 Provider 类型获取下一个可用的 API Key（轮询负载均衡）
@@ -696,26 +815,49 @@ impl ApiKeyProviderService {
         pool_type: &PoolProviderType,
         provider_id_hint: Option<&str>,
     ) -> Result<Option<ProviderCredential>, String> {
-        // 策略 1: 通过类型映射查找
-        if let Some(api_type) = self.map_pool_type_to_api_type(pool_type) {
-            tracing::debug!("[智能降级] 尝试类型映射: {:?} -> {:?}", pool_type, api_type);
-            if let Some(cred) = self.find_by_api_type(db, pool_type, &api_type)? {
-                return Ok(Some(cred));
-            }
-        }
+        eprintln!(
+            "[get_fallback_credential] 开始查找: pool_type={:?}, provider_id_hint={:?}",
+            pool_type, provider_id_hint
+        );
 
-        // 策略 2: 通过 provider_id 直接查找 (支持 60+ Provider)
+        // 策略 1: 优先通过 provider_id 直接查找 (支持 deepseek, moonshot 等 60+ Provider)
+        // 这些 Provider 在 API Key Provider 中有独立配置，应该优先使用
         if let Some(provider_id) = provider_id_hint {
-            tracing::debug!("[智能降级] 尝试 provider_id 查找: {}", provider_id);
+            eprintln!(
+                "[get_fallback_credential] 尝试按 provider_id '{}' 查找",
+                provider_id
+            );
             if let Some(cred) = self.find_by_provider_id(db, provider_id)? {
+                eprintln!(
+                    "[get_fallback_credential] 通过 provider_id '{}' 找到凭证: {:?}",
+                    provider_id, cred.name
+                );
+                return Ok(Some(cred));
+            }
+            eprintln!(
+                "[get_fallback_credential] provider_id '{}' 未找到凭证",
+                provider_id
+            );
+        }
+
+        // 策略 2: 通过类型映射查找（降级方案）
+        if let Some(api_type) = self.map_pool_type_to_api_type(pool_type) {
+            eprintln!(
+                "[get_fallback_credential] 尝试类型映射: {:?} -> {:?}",
+                pool_type, api_type
+            );
+            if let Some(cred) = self.find_by_api_type(db, pool_type, &api_type)? {
+                eprintln!(
+                    "[get_fallback_credential] 通过类型映射找到凭证: {:?}",
+                    cred.name
+                );
                 return Ok(Some(cred));
             }
         }
 
-        tracing::debug!(
-            "[智能降级] 未找到 {:?} 的降级凭证 (provider_id_hint: {:?})",
-            pool_type,
-            provider_id_hint
+        eprintln!(
+            "[get_fallback_credential] 未找到 {:?} 的降级凭证 (provider_id_hint: {:?})",
+            pool_type, provider_id_hint
         );
         Ok(None)
     }
@@ -831,8 +973,24 @@ impl ApiKeyProviderService {
             ApiKeyProviderDao::get_provider_by_id(&conn, provider_id).map_err(|e| e.to_string())?;
 
         let provider = match provider {
-            Some(p) if p.enabled => p,
-            _ => return Ok(None),
+            Some(p) if p.enabled => {
+                eprintln!(
+                    "[find_by_provider_id] 找到已启用的 provider: id={}, name={}, api_host={}, type={:?}",
+                    p.id, p.name, p.api_host, p.provider_type
+                );
+                p
+            }
+            Some(_p) => {
+                eprintln!(
+                    "[find_by_provider_id] provider '{}' 存在但未启用",
+                    provider_id
+                );
+                return Ok(None);
+            }
+            None => {
+                eprintln!("[find_by_provider_id] provider '{}' 不存在", provider_id);
+                return Ok(None);
+            }
         };
 
         // 获取启用的 API Key
@@ -840,8 +998,18 @@ impl ApiKeyProviderService {
             .map_err(|e| e.to_string())?;
 
         if keys.is_empty() {
+            eprintln!(
+                "[find_by_provider_id] provider '{}' 没有启用的 API Key",
+                provider_id
+            );
             return Ok(None);
         }
+
+        eprintln!(
+            "[find_by_provider_id] provider '{}' 有 {} 个启用的 API Key",
+            provider_id,
+            keys.len()
+        );
 
         // 轮询选择 API Key
         let index = {
@@ -857,18 +1025,79 @@ impl ApiKeyProviderService {
         // 解密 API Key
         let api_key = self.encryption.decrypt(&selected_key.api_key_encrypted)?;
 
-        // 转换为 OpenAI 兼容的 ProviderCredential
-        // 大多数 60+ Provider 都使用 OpenAI 兼容协议
+        // 根据 Provider 类型转换为对应的 ProviderCredential
         let credential =
-            self.convert_to_openai_compatible_credential(&provider, &selected_key.id, &api_key)?;
+            self.convert_provider_to_credential(&provider, &selected_key.id, &api_key)?;
 
         tracing::info!(
-            "[智能降级] 成功通过 provider_id 找到凭证: {} (key: {})",
+            "[智能降级] 成功通过 provider_id 找到凭证: {} (key: {}, type: {:?})",
             provider.name,
-            selected_key.alias.as_deref().unwrap_or(&selected_key.id)
+            selected_key.alias.as_deref().unwrap_or(&selected_key.id),
+            provider.provider_type
         );
 
         Ok(Some(credential))
+    }
+
+    /// 根据 Provider 类型转换为对应的 ProviderCredential
+    fn convert_provider_to_credential(
+        &self,
+        provider: &ApiKeyProvider,
+        key_id: &str,
+        api_key: &str,
+    ) -> Result<ProviderCredential, String> {
+        let (credential_data, pool_type) = match provider.provider_type {
+            ApiProviderType::Anthropic => {
+                // Anthropic 类型使用 ClaudeKey
+                let data = CredentialData::ClaudeKey {
+                    api_key: api_key.to_string(),
+                    base_url: Some(provider.api_host.clone()),
+                };
+                (data, PoolProviderType::Claude)
+            }
+            ApiProviderType::Gemini => {
+                // Gemini 类型使用 GeminiApiKey
+                let data = CredentialData::GeminiApiKey {
+                    api_key: api_key.to_string(),
+                    base_url: Some(provider.api_host.clone()),
+                    excluded_models: Vec::new(),
+                };
+                (data, PoolProviderType::GeminiApiKey)
+            }
+            _ => {
+                // 其他类型（OpenAI 兼容）使用 OpenAIKey
+                let data = CredentialData::OpenAIKey {
+                    api_key: api_key.to_string(),
+                    base_url: Some(provider.api_host.clone()),
+                };
+                (data, PoolProviderType::OpenAI)
+            }
+        };
+
+        let now = chrono::Utc::now();
+        Ok(ProviderCredential {
+            uuid: format!("fallback-{}", key_id),
+            provider_type: pool_type,
+            credential: credential_data,
+            name: Some(format!("[降级] {}", provider.name)),
+            is_healthy: true,
+            is_disabled: false,
+            check_health: false,
+            check_model_name: None,
+            not_supported_models: Vec::new(),
+            usage_count: 0,
+            error_count: 0,
+            last_used: None,
+            last_error_time: None,
+            last_error_message: None,
+            last_health_check_time: None,
+            last_health_check_model: None,
+            created_at: now,
+            updated_at: now,
+            cached_token: None,
+            source: CredentialSource::Imported,
+            proxy_url: None,
+        })
     }
 
     /// 转换为 ProviderCredential
@@ -906,46 +1135,6 @@ impl ApiKeyProviderService {
         Ok(ProviderCredential {
             uuid: format!("fallback-{}", key_id),
             provider_type: *pool_type,
-            credential: credential_data,
-            name: Some(format!("[降级] {}", provider.name)),
-            is_healthy: true,
-            is_disabled: false,
-            check_health: false, // 降级凭证不参与健康检查
-            check_model_name: None,
-            not_supported_models: Vec::new(),
-            usage_count: 0,
-            error_count: 0,
-            last_used: None,
-            last_error_time: None,
-            last_error_message: None,
-            last_health_check_time: None,
-            last_health_check_model: None,
-            created_at: now,
-            updated_at: now,
-            cached_token: None,
-            source: CredentialSource::Imported, // 标记为导入来源
-            proxy_url: None,
-        })
-    }
-
-    /// 转换为 OpenAI 兼容的 ProviderCredential
-    ///
-    /// 用于 DeepSeek、Moonshot、智谱 等 60+ Provider
-    fn convert_to_openai_compatible_credential(
-        &self,
-        provider: &ApiKeyProvider,
-        key_id: &str,
-        api_key: &str,
-    ) -> Result<ProviderCredential, String> {
-        let credential_data = CredentialData::OpenAIKey {
-            api_key: api_key.to_string(),
-            base_url: Some(provider.api_host.clone()), // 关键：使用 Provider 的 api_host
-        };
-
-        let now = chrono::Utc::now();
-        Ok(ProviderCredential {
-            uuid: format!("fallback-{}", key_id),
-            provider_type: PoolProviderType::OpenAI, // 统一使用 OpenAI 类型
             credential: credential_data,
             name: Some(format!("[降级] {}", provider.name)),
             is_healthy: true,

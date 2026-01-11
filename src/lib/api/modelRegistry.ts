@@ -9,6 +9,7 @@ import type {
   EnhancedModelMetadata,
   ModelSyncState,
   ModelTier,
+  ProviderAliasConfig,
   UserModelPreference,
 } from "@/lib/types/modelRegistry";
 
@@ -20,9 +21,10 @@ export async function getModelRegistry(): Promise<EnhancedModelMetadata[]> {
 }
 
 /**
- * 刷新模型注册表（从 models.dev 获取最新数据）
+ * 刷新模型注册表（强制从内嵌资源重新加载）
+ * @returns 加载的模型数量
  */
-export async function refreshModelRegistry(): Promise<void> {
+export async function refreshModelRegistry(): Promise<number> {
   return invoke("refresh_model_registry");
 }
 
@@ -98,6 +100,26 @@ export async function getModelsByTier(
 }
 
 /**
+ * 获取指定 Provider 的别名配置
+ * 用于获取 Antigravity、Kiro 等中转服务的模型别名映射
+ * @param provider Provider ID（如 "antigravity"、"kiro"）
+ */
+export async function getProviderAliasConfig(
+  provider: string,
+): Promise<ProviderAliasConfig | null> {
+  return invoke("get_provider_alias_config", { provider });
+}
+
+/**
+ * 获取所有 Provider 的别名配置
+ */
+export async function getAllAliasConfigs(): Promise<
+  Record<string, ProviderAliasConfig>
+> {
+  return invoke("get_all_alias_configs");
+}
+
+/**
  * 模型注册表 API 对象
  */
 export const modelRegistryApi = {
@@ -111,4 +133,6 @@ export const modelRegistryApi = {
   getModelSyncState,
   getModelsForProvider,
   getModelsByTier,
+  getProviderAliasConfig,
+  getAllAliasConfigs,
 };

@@ -66,6 +66,8 @@ pub struct AwsEventStreamParser {
     context: StreamContext,
     /// 是否已发送消息开始事件
     message_started: bool,
+    /// 是否已发送消息结束事件
+    message_stopped: bool,
     /// 是否在文本块中
     in_text_block: bool,
     /// 当前文本块索引
@@ -92,6 +94,7 @@ impl AwsEventStreamParser {
             max_buffer_size: Self::DEFAULT_MAX_BUFFER_SIZE,
             context: StreamContext::new(),
             message_started: false,
+            message_stopped: false,
             in_text_block: false,
             text_block_index: None,
         }
@@ -127,6 +130,7 @@ impl AwsEventStreamParser {
         self.parse_error_count = 0;
         self.context = StreamContext::new();
         self.message_started = false;
+        self.message_stopped = false;
         self.in_text_block = false;
         self.text_block_index = None;
     }
@@ -141,6 +145,13 @@ impl AwsEventStreamParser {
             return Vec::new();
         }
 
+        // 调试日志：记录接收到的字节
+        tracing::info!(
+            "[AWS_PARSER] 收到 {} 字节, 缓冲区当前 {} 字节",
+            bytes.len(),
+            self.buffer.len()
+        );
+
         // 更新状态
         if self.state == ParserState::Idle {
             self.state = ParserState::Parsing;
@@ -149,6 +160,12 @@ impl AwsEventStreamParser {
         // 检查缓冲区大小限制
         if self.buffer.len() + bytes.len() > self.max_buffer_size {
             self.parse_error_count += 1;
+            tracing::error!(
+                "[AWS_PARSER] 缓冲区溢出: {} + {} > {}",
+                self.buffer.len(),
+                bytes.len(),
+                self.max_buffer_size
+            );
             return vec![StreamEvent::Error {
                 error_type: "buffer_overflow".to_string(),
                 message: "缓冲区溢出".to_string(),
@@ -159,7 +176,15 @@ impl AwsEventStreamParser {
         self.buffer.extend_from_slice(bytes);
 
         // 解析缓冲区中的所有完整 JSON 对象
-        self.parse_buffer()
+        let events = self.parse_buffer();
+
+        tracing::info!(
+            "[AWS_PARSER] 解析出 {} 个事件, 缓冲区剩余 {} 字节",
+            events.len(),
+            self.buffer.len()
+        );
+
+        events
     }
 
     /// 完成解析
@@ -172,6 +197,7 @@ impl AwsEventStreamParser {
         events.extend(self.parse_buffer());
 
         // 完成所有未完成的工具调用
+        let has_tool_calls = !self.tool_accumulators.is_empty();
         for (id, accumulator) in self.tool_accumulators.drain() {
             if !accumulator.name.is_empty() {
                 events.push(StreamEvent::ToolUseStop { id: id.clone() });
@@ -184,6 +210,19 @@ impl AwsEventStreamParser {
         // 关闭文本块（如果有）
         if let Some(index) = self.text_block_index.take() {
             events.push(StreamEvent::ContentBlockStop { index });
+        }
+
+        // 如果消息已经开始但还没有发送 MessageStop，生成一个
+        // 这确保了即使 Kiro 后端没有发送 stop 事件，客户端也能收到完整的响应
+        if self.message_started && !self.message_stopped {
+            tracing::info!("[AWS_PARSER] finish() 生成 MessageStop 事件");
+            let stop_reason = if has_tool_calls {
+                StopReason::ToolUse
+            } else {
+                StopReason::EndTurn
+            };
+            events.push(StreamEvent::MessageStop { stop_reason });
+            self.message_stopped = true;
         }
 
         // 更新状态
@@ -211,6 +250,7 @@ impl AwsEventStreamParser {
                     match self.parse_json_event(&json_str) {
                         Ok(event_list) => events.extend(event_list),
                         Err(e) => {
+                            tracing::warn!("[AWS_PARSER] JSON 解析错误: {}", e);
                             self.parse_error_count += 1;
                             events.push(StreamEvent::Error {
                                 error_type: "parse_error".to_string(),
@@ -236,11 +276,57 @@ impl AwsEventStreamParser {
     }
 
     /// 查找 JSON 对象的开始位置
+    ///
+    /// AWS Event Stream 包含二进制头部，简单的 `{` 可能匹配到错误位置。
+    /// 我们只搜索有效的 JSON 模式：
+    /// - `{"content":` - 文本内容
+    /// - `{"name":` - 工具调用开始（包含 toolUseId）
+    /// - `{"toolUseId":` - 工具调用事件
+    /// - `{"input":` - 工具参数续传
+    /// - `{"stop":` - 停止事件
+    /// - `{"usage":` - 使用量
+    /// - `{"contextUsagePercentage":` - 上下文使用百分比
+    /// - `{"followupPrompt":` - 后续提示（跳过）
     fn find_json_start(&self, from: usize) -> Option<usize> {
-        self.buffer[from..]
-            .iter()
-            .position(|&b| b == b'{')
-            .map(|p| from + p)
+        let buffer = &self.buffer[from..];
+
+        // 定义所有有效的 JSON 模式
+        let patterns: &[&[u8]] = &[
+            b"{\"content\":",
+            b"{\"name\":",
+            b"{\"toolUseId\":",
+            b"{\"input\":",
+            b"{\"stop\":",
+            b"{\"usage\":",
+            b"{\"contextUsagePercentage\":",
+            b"{\"followupPrompt\":",
+        ];
+
+        // 查找所有模式的位置，返回最早出现的
+        let mut earliest: Option<usize> = None;
+
+        for pattern in patterns {
+            if let Some(pos) = Self::find_pattern(buffer, pattern) {
+                match earliest {
+                    None => earliest = Some(pos),
+                    Some(e) if pos < e => earliest = Some(pos),
+                    _ => {}
+                }
+            }
+        }
+
+        earliest.map(|p| from + p)
+    }
+
+    /// 在缓冲区中查找模式
+    fn find_pattern(buffer: &[u8], pattern: &[u8]) -> Option<usize> {
+        if pattern.is_empty() || buffer.len() < pattern.len() {
+            return None;
+        }
+
+        buffer
+            .windows(pattern.len())
+            .position(|window| window == pattern)
     }
 
     /// 从缓冲区中提取完整的 JSON 对象
@@ -284,6 +370,16 @@ impl AwsEventStreamParser {
 
     /// 解析 JSON 事件并生成 StreamEvent
     fn parse_json_event(&mut self, json_str: &str) -> Result<Vec<StreamEvent>, String> {
+        // 调试日志：记录解析到的 JSON
+        tracing::info!(
+            "[AWS_PARSER] 解析 JSON: {}",
+            if json_str.len() > 200 {
+                format!("{}...", &json_str[..200])
+            } else {
+                json_str.to_string()
+            }
+        );
+
         let value: serde_json::Value =
             serde_json::from_str(json_str).map_err(|e| format!("JSON 解析错误: {}", e))?;
 
@@ -389,8 +485,45 @@ impl AwsEventStreamParser {
                 }
             }
         }
+        // 处理独立的 input 事件（工具调用的 input 续传，没有 toolUseId）
+        // Kiro 的工具调用可能分多个事件发送：
+        // 1. {"name":"xxx","toolUseId":"xxx"} - 开始
+        // 2. {"input":"..."} - input 数据（可能多次）
+        // 3. {"stop":true} - 结束
+        else if let Some(input_chunk) = value.get("input").and_then(|v| v.as_str()) {
+            // 找到当前活跃的工具调用（应该只有一个）
+            if let Some((tool_id, accumulator)) = self.tool_accumulators.iter_mut().next() {
+                let tool_id = tool_id.clone();
+                accumulator.input.push_str(input_chunk);
+                events.push(StreamEvent::ToolUseInputDelta {
+                    id: tool_id,
+                    partial_json: input_chunk.to_string(),
+                });
+            } else {
+                tracing::warn!(
+                    "[AWS_PARSER] 收到独立的 input 事件但没有活跃的工具调用: {}",
+                    input_chunk
+                );
+            }
+        }
         // 处理独立的 stop 事件
         else if value.get("stop").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // 首先检查是否有活跃的工具调用需要关闭
+            // 这处理 Kiro 发送 {"stop":true} 来结束工具调用的情况
+            if !self.tool_accumulators.is_empty() {
+                // 关闭所有活跃的工具调用
+                let tool_ids: Vec<String> = self.tool_accumulators.keys().cloned().collect();
+                for tool_id in tool_ids {
+                    if let Some(acc) = self.tool_accumulators.remove(&tool_id) {
+                        self.context.remove_tool_call(&tool_id);
+                        events.push(StreamEvent::ToolUseStop { id: tool_id });
+                        events.push(StreamEvent::ContentBlockStop {
+                            index: acc.block_index,
+                        });
+                    }
+                }
+            }
+
             // 关闭文本块（如果有）
             if let Some(index) = self.text_block_index.take() {
                 self.in_text_block = false;
@@ -405,6 +538,7 @@ impl AwsEventStreamParser {
             };
 
             events.push(StreamEvent::MessageStop { stop_reason });
+            self.message_stopped = true;
         }
         // 处理 usage 事件
         else if let Some(usage) = value.get("usage").and_then(|v| v.as_f64()) {

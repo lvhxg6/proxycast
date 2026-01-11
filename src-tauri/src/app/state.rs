@@ -17,9 +17,8 @@ use crate::commands::plugin_cmd::PluginManagerState;
 use crate::commands::plugin_install_cmd::PluginInstallerState;
 use crate::commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServiceState};
 use crate::commands::resilience_cmd::ResilienceConfigState;
-use crate::commands::router_cmd::RouterConfigState;
 use crate::commands::skill_cmd::SkillServiceState;
-use crate::config::Config;
+use crate::config::{Config, ConfigManager, GlobalConfigManager, GlobalConfigManagerState};
 use crate::database;
 use crate::flow_monitor::{
     BatchOperations, BookmarkManager, EnhancedStatsService, FlowFileStore, FlowInterceptor,
@@ -44,6 +43,13 @@ pub fn init_core_state(config: Config) -> (AppState, LogState) {
     (state, logs)
 }
 
+/// 初始化全局配置管理器
+pub fn init_global_config_manager(config: &Config) -> GlobalConfigManagerState {
+    let config_path = ConfigManager::default_config_path();
+    let manager = GlobalConfigManager::new(config.clone(), config_path);
+    GlobalConfigManagerState::new(manager)
+}
+
 /// 初始化服务状态
 pub struct ServiceStates {
     pub skill_service: SkillServiceState,
@@ -52,7 +58,6 @@ pub struct ServiceStates {
     pub credential_sync_service: CredentialSyncServiceState,
     pub token_cache_service: TokenCacheServiceState,
     pub machine_id_service: MachineIdState,
-    pub router_config: RouterConfigState,
     pub resilience_config: ResilienceConfigState,
     pub plugin_manager: PluginManagerState,
     pub plugin_installer: PluginInstallerState,
@@ -86,9 +91,6 @@ pub fn init_service_states() -> ServiceStates {
         .expect("Failed to initialize MachineIdService");
     let machine_id_service_state: MachineIdState = Arc::new(RwLock::new(machine_id_service));
 
-    // Initialize RouterConfigState
-    let router_config_state = RouterConfigState::default();
-
     // Initialize ResilienceConfigState
     let resilience_config_state = ResilienceConfigState::default();
 
@@ -109,7 +111,6 @@ pub fn init_service_states() -> ServiceStates {
         credential_sync_service: credential_sync_service_state,
         token_cache_service: token_cache_service_state,
         machine_id_service: machine_id_service_state,
-        router_config: router_config_state,
         resilience_config: resilience_config_state,
         plugin_manager: plugin_manager_state,
         plugin_installer: plugin_installer_state,

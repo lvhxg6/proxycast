@@ -21,6 +21,14 @@
 - `backup_service.rs` - 备份服务
 - `live_sync.rs` - 实时同步服务
 - `switch.rs` - 开关服务
+- `sysinfo_service.rs` - 系统信息服务（CPU/内存监控）
+- `file_browser_service.rs` - 文件浏览器服务（目录列表、文件预览）
+- `api_key_provider_service.rs` - API Key Provider 服务
+- `kiro_event_service.rs` - Kiro 事件服务
+- `machine_id_service.rs` - 机器 ID 服务
+- `model_registry_service.rs` - 模型注册表服务
+- `update_check_service.rs` - 自动更新检查服务（每日检查、系统通知）
+- `update_window.rs` - 更新提醒独立窗口管理
 
 ## 更新提醒
 

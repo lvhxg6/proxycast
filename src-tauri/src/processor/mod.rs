@@ -109,19 +109,15 @@ impl RequestProcessor {
     }
 
     /// 创建带默认路由规则的路由器
+    ///
+    /// 注意：不再添加硬编码的路由规则，让用户设置的默认 Provider 生效
+    /// 用户可以通过 UI 或配置文件自定义路由规则
     fn create_router_with_defaults() -> Router {
-        use crate::router::RoutingRule;
-        use crate::ProviderType;
+        // 创建空的路由器，默认 Provider 会在启动时从配置中设置
+        // 不要硬编码任何 Provider，避免与用户配置冲突
+        let router = Router::new_empty();
 
-        let mut router = Router::new(ProviderType::Kiro);
-
-        // 添加默认路由规则：gemini-* → Antigravity
-        router.add_rule(RoutingRule::new("gemini-*", ProviderType::Antigravity, 10));
-
-        // 添加默认路由规则：claude-* → Kiro
-        router.add_rule(RoutingRule::new("claude-*", ProviderType::Kiro, 10));
-
-        tracing::info!("[ROUTER] 初始化默认路由规则: gemini-* → Antigravity, claude-* → Kiro");
+        tracing::info!("[ROUTER] 初始化空路由器，等待从配置加载默认 Provider");
 
         router
     }
@@ -193,8 +189,8 @@ impl RequestProcessor {
     /// * `model` - 模型名称（应该是解析后的实际模型名）
     ///
     /// # Returns
-    /// 选择的 Provider 类型和是否使用默认 Provider
-    pub async fn route_model(&self, model: &str) -> (crate::ProviderType, bool) {
+    /// 选择的 Provider 类型（如果设置了）和是否使用默认 Provider
+    pub async fn route_model(&self, model: &str) -> (Option<crate::ProviderType>, bool) {
         let router = self.router.read().await;
         let result = router.route(model);
         (result.provider, result.is_default)
@@ -206,18 +202,26 @@ impl RequestProcessor {
     /// * `ctx` - 请求上下文
     ///
     /// # Returns
-    /// 选择的 Provider 类型
-    pub async fn route_for_context(&self, ctx: &mut RequestContext) -> crate::ProviderType {
+    /// 选择的 Provider 类型，如果未设置默认 Provider 则返回 None
+    pub async fn route_for_context(&self, ctx: &mut RequestContext) -> Option<crate::ProviderType> {
         let (provider, is_default) = self.route_model(&ctx.resolved_model).await;
-        ctx.set_provider(provider);
 
-        tracing::info!(
-            "[ROUTE] request_id={} model={} provider={} is_default={}",
-            ctx.request_id,
-            ctx.resolved_model,
-            provider,
-            is_default
-        );
+        if let Some(p) = provider {
+            ctx.set_provider(p);
+            tracing::info!(
+                "[ROUTE] request_id={} model={} provider={} is_default={}",
+                ctx.request_id,
+                ctx.resolved_model,
+                p,
+                is_default
+            );
+        } else {
+            tracing::warn!(
+                "[ROUTE] request_id={} model={} 未设置默认 Provider",
+                ctx.request_id,
+                ctx.resolved_model
+            );
+        }
 
         provider
     }
@@ -230,26 +234,13 @@ impl RequestProcessor {
     /// * `ctx` - 请求上下文
     ///
     /// # Returns
-    /// 选择的 Provider 类型
-    pub async fn resolve_and_route(&self, ctx: &mut RequestContext) -> crate::ProviderType {
+    /// 选择的 Provider 类型，如果未设置默认 Provider 则返回 None
+    pub async fn resolve_and_route(&self, ctx: &mut RequestContext) -> Option<crate::ProviderType> {
         // 1. 解析模型别名
         self.resolve_model_for_context(ctx).await;
 
         // 2. 根据解析后的模型选择 Provider
         self.route_for_context(ctx).await
-    }
-
-    /// 检查模型是否被指定 Provider 排除
-    ///
-    /// # Arguments
-    /// * `provider` - Provider 类型
-    /// * `model` - 模型名称
-    ///
-    /// # Returns
-    /// 如果模型被排除返回 true
-    pub async fn is_model_excluded(&self, provider: crate::ProviderType, model: &str) -> bool {
-        let router = self.router.read().await;
-        router.is_excluded(provider, model)
     }
 }
 

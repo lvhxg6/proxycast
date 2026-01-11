@@ -2,7 +2,15 @@
 //!
 //! 提供原生 Agent 的 Tauri 命令（兼容旧 API）
 
-use crate::agent::{ImageData, NativeAgentState, NativeChatRequest, ProviderType};
+use crate::agent::tools::{
+    handle_term_scrollback_response, handle_terminal_command_response, GetScrollbackResponse,
+    TerminalCommandResponse,
+};
+use crate::agent::{
+    AgentMessage, AgentSession, ImageData, NativeAgentState, NativeChatRequest, ProviderType,
+};
+use crate::database::dao::agent::AgentDao;
+use crate::database::DbConnection;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -52,7 +60,12 @@ pub async fn agent_start_process(
     let base_url = format!("http://127.0.0.1:{}", port);
     let provider_type = ProviderType::from_str(&default_provider);
 
-    agent_state.init(base_url.clone(), api_key, provider_type)?;
+    agent_state.init(
+        base_url.clone(),
+        api_key,
+        provider_type,
+        Some(default_provider),
+    )?;
 
     Ok(AgentProcessStatus {
         running: true,
@@ -106,6 +119,7 @@ pub struct SkillInfo {
 pub async fn agent_create_session(
     agent_state: State<'_, NativeAgentState>,
     app_state: State<'_, AppState>,
+    db: State<'_, DbConnection>,
     provider_type: String,
     model: Option<String>,
     system_prompt: Option<String>,
@@ -137,13 +151,31 @@ pub async fn agent_create_session(
         let api_key = api_key.ok_or_else(|| "未配置 API Key".to_string())?;
         let base_url = format!("http://127.0.0.1:{}", port);
         let provider_type = ProviderType::from_str(&default_provider);
-        agent_state.init(base_url, api_key, provider_type)?;
+        agent_state.init(base_url, api_key, provider_type, Some(default_provider))?;
     }
 
     // 构建包含 Skills 的 System Prompt
     let final_system_prompt = build_system_prompt_with_skills(system_prompt, skills.as_ref());
 
-    let session_id = agent_state.create_session(model.clone(), final_system_prompt)?;
+    let session_id = agent_state.create_session(model.clone(), final_system_prompt.clone())?;
+
+    // 保存会话到数据库
+    let now = chrono::Utc::now().to_rfc3339();
+    let session = AgentSession {
+        id: session_id.clone(),
+        model: model.clone().unwrap_or_else(|| "default".to_string()),
+        messages: Vec::new(),
+        system_prompt: final_system_prompt,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+
+    {
+        let conn = db.lock().map_err(|e| format!("数据库锁定失败: {}", e))?;
+        if let Err(e) = AgentDao::create_session(&conn, &session) {
+            tracing::warn!("[Agent] 保存会话到数据库失败: {}", e);
+        }
+    }
 
     Ok(CreateSessionResponse {
         session_id,
@@ -243,7 +275,7 @@ pub async fn agent_send_message(
         let api_key = api_key.ok_or_else(|| "未配置 API Key".to_string())?;
         let base_url = format!("http://127.0.0.1:{}", port);
         let provider_type = ProviderType::from_str(&default_provider);
-        agent_state.init(base_url, api_key, provider_type)?;
+        agent_state.init(base_url, api_key, provider_type, Some(default_provider))?;
     }
 
     // 根据启用的模式构建最终消息
@@ -303,22 +335,29 @@ pub struct SessionInfo {
 
 /// 获取会话列表
 #[tauri::command]
-pub async fn agent_list_sessions(
-    agent_state: State<'_, NativeAgentState>,
-) -> Result<Vec<SessionInfo>, String> {
-    let sessions = agent_state.list_sessions();
+pub async fn agent_list_sessions(db: State<'_, DbConnection>) -> Result<Vec<SessionInfo>, String> {
+    let conn = db.lock().map_err(|e| format!("数据库锁定失败: {}", e))?;
 
-    Ok(sessions
+    let sessions =
+        AgentDao::list_sessions(&conn).map_err(|e| format!("获取会话列表失败: {}", e))?;
+
+    // 获取每个会话的消息数量
+    let result: Vec<SessionInfo> = sessions
         .into_iter()
-        .map(|s| SessionInfo {
-            session_id: s.id,
-            provider_type: "native".to_string(),
-            model: Some(s.model),
-            created_at: s.created_at.clone(),
-            last_activity: s.created_at,
-            messages_count: s.messages.len(),
+        .map(|s| {
+            let messages_count = AgentDao::get_message_count(&conn, &s.id).unwrap_or(0);
+            SessionInfo {
+                session_id: s.id,
+                provider_type: "native".to_string(),
+                model: Some(s.model),
+                created_at: s.created_at.clone(),
+                last_activity: s.updated_at,
+                messages_count,
+            }
         })
-        .collect())
+        .collect();
+
+    Ok(result)
 }
 
 /// 获取会话详情
@@ -345,11 +384,98 @@ pub async fn agent_get_session(
 #[tauri::command]
 pub async fn agent_delete_session(
     agent_state: State<'_, NativeAgentState>,
+    db: State<'_, DbConnection>,
     session_id: String,
 ) -> Result<(), String> {
-    if agent_state.delete_session(&session_id) {
-        Ok(())
-    } else {
-        Err("会话不存在".to_string())
-    }
+    // 从内存中删除
+    agent_state.delete_session(&session_id);
+
+    // 从数据库中删除
+    let conn = db.lock().map_err(|e| format!("数据库锁定失败: {}", e))?;
+    AgentDao::delete_session(&conn, &session_id).map_err(|e| format!("删除会话失败: {}", e))?;
+
+    Ok(())
+}
+
+/// 获取会话消息列表
+#[tauri::command]
+pub async fn agent_get_session_messages(
+    db: State<'_, DbConnection>,
+    session_id: String,
+) -> Result<Vec<AgentMessage>, String> {
+    let conn = db.lock().map_err(|e| format!("数据库锁定失败: {}", e))?;
+
+    let messages =
+        AgentDao::get_messages(&conn, &session_id).map_err(|e| format!("获取消息失败: {}", e))?;
+
+    Ok(messages)
+}
+
+/// 处理终端命令响应
+///
+/// 前端在用户批准/拒绝命令后调用此命令，将结果传递给 TerminalTool
+#[tauri::command]
+pub async fn agent_terminal_command_response(
+    request_id: String,
+    success: bool,
+    output: String,
+    error: Option<String>,
+    exit_code: Option<i32>,
+    rejected: bool,
+) -> Result<(), String> {
+    tracing::info!(
+        "[Agent] 收到终端命令响应: request_id={}, success={}, rejected={}",
+        request_id,
+        success,
+        rejected
+    );
+
+    let response = TerminalCommandResponse {
+        request_id,
+        success,
+        output,
+        error,
+        exit_code,
+        rejected,
+    };
+
+    handle_terminal_command_response(response);
+
+    Ok(())
+}
+
+/// 前端返回终端滚动缓冲区数据
+#[tauri::command]
+pub async fn agent_term_scrollback_response(
+    request_id: String,
+    success: bool,
+    total_lines: usize,
+    line_start: usize,
+    line_end: usize,
+    content: String,
+    has_more: bool,
+    error: Option<String>,
+) -> Result<(), String> {
+    tracing::info!(
+        "[Agent] 收到终端滚动缓冲区响应: request_id={}, success={}, lines={}-{}",
+        request_id,
+        success,
+        line_start,
+        line_end
+    );
+
+    let response = GetScrollbackResponse {
+        request_id,
+        success,
+        total_lines,
+        line_start,
+        line_end,
+        content,
+        has_more,
+        error,
+    };
+
+    handle_term_scrollback_response(response);
+
+    Ok(())
 }

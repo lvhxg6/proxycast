@@ -59,7 +59,8 @@ use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
 use crate::models::provider_pool_model::{CredentialData, ProviderCredential};
 use crate::providers::{
-    AntigravityProvider, ClaudeCustomProvider, KiroProvider, OpenAICustomProvider, VertexProvider,
+    AntigravityProvider, ClaudeCustomProvider, IFlowProvider, KiroProvider, OpenAICustomProvider,
+    VertexProvider,
 };
 use crate::server::AppState;
 use crate::server_utils::{
@@ -463,6 +464,9 @@ pub async fn call_provider_anthropic(
                     if resp.status().is_success() {
                         match resp.text().await {
                             Ok(body) => {
+                                // 记录原始响应以便调试
+                                eprintln!("[PROVIDER_CALL] OpenAI 响应: {}", &body[..body.len().min(500)]);
+
                                 if let Ok(openai_resp) =
                                     serde_json::from_str::<serde_json::Value>(&body)
                                 {
@@ -491,7 +495,8 @@ pub async fn call_provider_anthropic(
                                         build_anthropic_response(&request.model, &parsed)
                                     }
                                 } else {
-                                    // 记录解析失败
+                                    // 记录解析失败和原始响应
+                                    eprintln!("[PROVIDER_CALL] 解析 OpenAI 响应失败，原始响应: {}", &body);
                                     if let Some(db) = &state.db {
                                         let _ = state.pool_service.mark_unhealthy(
                                             db,
@@ -501,7 +506,7 @@ pub async fn call_provider_anthropic(
                                     }
                                     (
                                         StatusCode::INTERNAL_SERVER_ERROR,
-                                        Json(serde_json::json!({"error": {"message": "Failed to parse OpenAI response"}})),
+                                        Json(serde_json::json!({"error": {"message": format!("Failed to parse OpenAI response. Body: {}", &body[..body.len().min(200)])}})),
                                     )
                                         .into_response()
                                 }
@@ -611,8 +616,10 @@ pub async fn call_provider_anthropic(
                         return Response::builder()
                             .status(StatusCode::OK)
                             .header(header::CONTENT_TYPE, "text/event-stream")
-                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
                             .header("Connection", "keep-alive")
+                            .header("X-Accel-Buffering", "no") // 禁用 nginx 等代理的缓冲
+                            .header("Transfer-Encoding", "chunked")
                             .body(Body::from_stream(stream))
                             .unwrap_or_else(|_| {
                                 (
@@ -823,8 +830,10 @@ pub async fn call_provider_anthropic(
                         return Response::builder()
                             .status(StatusCode::OK)
                             .header(header::CONTENT_TYPE, "text/event-stream")
-                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
                             .header("Connection", "keep-alive")
+                            .header("X-Accel-Buffering", "no") // 禁用 nginx 等代理的缓冲
+                            .header("Transfer-Encoding", "chunked")
                             .body(Body::from_stream(stream))
                             .unwrap_or_else(|_| {
                                 (
@@ -1834,8 +1843,10 @@ pub async fn call_provider_openai(
                             return Response::builder()
                                 .status(StatusCode::OK)
                                 .header(header::CONTENT_TYPE, "text/event-stream")
-                                .header(header::CACHE_CONTROL, "no-cache")
+                                .header(header::CACHE_CONTROL, "no-cache, no-store, must-revalidate")
                                 .header("Connection", "keep-alive")
+                                .header("X-Accel-Buffering", "no") // 禁用 nginx 等代理的缓冲
+                                .header("Transfer-Encoding", "chunked")
                                 .body(Body::from_stream(stream))
                                 .unwrap_or_else(|_| {
                                     (
@@ -1909,11 +1920,145 @@ pub async fn call_provider_openai(
                     .into_response()
             }
         }
+        // IFlow 凭证类型 - 支持 OpenAI 格式
+        CredentialData::IFlowOAuth { creds_file_path } => {
+            let db = match &state.db {
+                Some(db) => db,
+                None => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": {"message": "Database not available"}})),
+                    )
+                        .into_response();
+                }
+            };
+
+            // 获取缓存的 token
+            let token = match state
+                .token_cache
+                .get_valid_token(db, &credential.uuid)
+                .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("[POOL] IFlow token cache miss, loading from source: {}", e);
+                    let mut iflow = IFlowProvider::new();
+                    if let Err(e) = iflow.load_credentials_from_path(creds_file_path).await {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&format!("Failed to load IFlow credentials: {}", e)),
+                        );
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": {"message": format!("Failed to load IFlow credentials: {}", e)}})),
+                        )
+                            .into_response();
+                    }
+                    if let Err(e) = iflow.ensure_valid_token().await {
+                        let _ = state.pool_service.mark_unhealthy(
+                            db,
+                            &credential.uuid,
+                            Some(&format!("IFlow token refresh failed: {}", e)),
+                        );
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({"error": {"message": format!("IFlow token refresh failed: {}", e)}})),
+                        )
+                            .into_response();
+                    }
+                    iflow.credentials.access_token.unwrap_or_default()
+                }
+            };
+
+            let mut iflow = IFlowProvider::new();
+            iflow.credentials.access_token = Some(token);
+
+            let request_json = serde_json::to_value(request).unwrap_or_default();
+            match iflow.call_api(&request_json).await {
+                Ok(response) => {
+                    let status = response.status();
+                    let headers = response.headers().clone();
+
+                    match response.bytes().await {
+                        Ok(body) => {
+                            let mut response_builder = Response::builder().status(status);
+                            for (key, value) in headers.iter() {
+                                response_builder = response_builder.header(key, value);
+                            }
+                            response_builder.body(Body::from(body)).unwrap_or_else(|_| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!("[IFlow] Failed to read response body: {}", e);
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": {"message": format!("Failed to read IFlow response: {}", e)}})),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("[IFlow] API call failed: {}", e);
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({"error": {"message": format!("IFlow API call failed: {}", e)}})),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        CredentialData::IFlowCookie { creds_file_path } => {
+            let mut iflow = IFlowProvider::new();
+            if let Err(e) = iflow.load_credentials_from_path(creds_file_path).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": format!("Failed to load IFlow credentials: {}", e)}})),
+                )
+                    .into_response();
+            }
+
+            let request_json = serde_json::to_value(request).unwrap_or_default();
+            match iflow.call_api(&request_json).await {
+                Ok(response) => {
+                    let status = response.status();
+                    let headers = response.headers().clone();
+
+                    match response.bytes().await {
+                        Ok(body) => {
+                            let mut response_builder = Response::builder().status(status);
+                            for (key, value) in headers.iter() {
+                                response_builder = response_builder.header(key, value);
+                            }
+                            response_builder.body(Body::from(body)).unwrap_or_else(|_| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response").into_response()
+                            })
+                        }
+                        Err(e) => {
+                            tracing::error!("[IFlow] Failed to read response body: {}", e);
+                            (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(serde_json::json!({"error": {"message": format!("Failed to read IFlow response: {}", e)}})),
+                            )
+                                .into_response()
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("[IFlow] API call failed: {}", e);
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({"error": {"message": format!("IFlow API call failed: {}", e)}})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         // 新增的凭证类型暂不支持 OpenAI 格式
         CredentialData::CodexOAuth { .. }
-        | CredentialData::ClaudeOAuth { .. }
-        | CredentialData::IFlowOAuth { .. }
-        | CredentialData::IFlowCookie { .. } => {
+        | CredentialData::ClaudeOAuth { .. } => {
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": {"message": "This credential type does not support OpenAI format yet"}})),
@@ -2669,7 +2814,7 @@ pub async fn handle_kiro_stream(
             match chunk_result {
                 Ok(bytes) => {
                     // 调试日志：记录接收到的字节数
-                    tracing::debug!(
+                    tracing::info!(
                         "[KIRO_STREAM] 收到 {} 字节数据",
                         bytes.len()
                     );
@@ -2681,7 +2826,7 @@ pub async fn handle_kiro_stream(
                     };
 
                     // 调试日志：记录生成的 SSE 事件数量
-                    tracing::debug!(
+                    tracing::info!(
                         "[KIRO_STREAM] 生成 {} 个 SSE 事件",
                         sse_strings.len()
                     );
@@ -2765,7 +2910,7 @@ pub async fn handle_kiro_stream(
             pipeline_guard.finish()
         };
 
-        tracing::debug!("[KIRO_STREAM] finalize 生成 {} 个事件", final_events.len());
+        tracing::info!("[KIRO_STREAM] finalize 生成 {} 个事件", final_events.len());
 
         for sse_str in final_events {
             // 调用 FlowMonitor.process_chunk()

@@ -13,35 +13,57 @@ import { useProviderPool } from "@/hooks/useProviderPool";
 import { useApiKeyProvider } from "@/hooks/useApiKeyProvider";
 import { useModelRegistry } from "@/hooks/useModelRegistry";
 import { getDefaultProvider } from "@/hooks/useTauri";
+import { getProviderAliasConfig } from "@/lib/api/modelRegistry";
+import type { ProviderAliasConfig } from "@/lib/types/modelRegistry";
 
-// OAuth 凭证类型到显示名称和 registry ID 的映射
-const CREDENTIAL_TYPE_CONFIG: Record<
-  string,
-  { label: string; registryId: string }
-> = {
-  kiro: { label: "Kiro", registryId: "anthropic" },
-  gemini: { label: "Gemini", registryId: "google" },
-  qwen: { label: "通义千问", registryId: "alibaba" },
-  antigravity: { label: "Antigravity", registryId: "google" },
-  codex: { label: "Codex", registryId: "openai" },
-  claude_oauth: { label: "Claude OAuth", registryId: "anthropic" },
-  iflow: { label: "iFlow", registryId: "custom" },
-  openai: { label: "OpenAI", registryId: "openai" },
-  claude: { label: "Claude", registryId: "anthropic" },
-  gemini_api_key: { label: "Gemini", registryId: "google" },
+// Provider type 到 registry ID 的映射（用于获取模型列表）
+// 注意：antigravity 和 kiro 使用别名配置，需要单独处理
+const getRegistryIdFromType = (providerType: string): string => {
+  const typeMap: Record<string, string> = {
+    openai: "openai",
+    anthropic: "anthropic",
+    gemini: "google",
+    "azure-openai": "openai",
+    vertexai: "google",
+    ollama: "ollama",
+    kiro: "kiro", // 使用别名配置
+    claude: "anthropic",
+    claude_oauth: "anthropic",
+    qwen: "alibaba",
+    codex: "openai",
+    antigravity: "antigravity", // 使用别名配置
+    iflow: "openai",
+    gemini_api_key: "google",
+  };
+  return typeMap[providerType.toLowerCase()] || providerType.toLowerCase();
 };
 
-// API Key Provider 类型到显示名称和 registry ID 的映射
-const API_KEY_PROVIDER_CONFIG: Record<
-  string,
-  { label: string; registryId: string }
-> = {
-  anthropic: { label: "Anthropic", registryId: "anthropic" },
-  openai: { label: "OpenAI", registryId: "openai" },
-  gemini: { label: "Gemini", registryId: "google" },
-  "azure-openai": { label: "Azure OpenAI", registryId: "openai" },
-  vertexai: { label: "VertexAI", registryId: "google" },
-  ollama: { label: "Ollama", registryId: "ollama" },
+// 需要使用别名配置的 Provider 列表
+const ALIAS_PROVIDERS = ["antigravity", "kiro"];
+
+// 生成 Provider 的显示标签
+const getProviderLabel = (providerType: string): string => {
+  const labelMap: Record<string, string> = {
+    kiro: "Kiro",
+    gemini: "Gemini OAuth",
+    qwen: "通义千问",
+    antigravity: "Antigravity",
+    codex: "Codex",
+    claude_oauth: "Claude OAuth",
+    claude: "Claude",
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    "azure-openai": "Azure OpenAI",
+    vertexai: "VertexAI",
+    ollama: "Ollama",
+    gemini_api_key: "Gemini API Key",
+    iflow: "iFlow",
+  };
+  // 如果在映射表中，使用映射；否则首字母大写
+  return (
+    labelMap[providerType.toLowerCase()] ||
+    providerType.charAt(0).toUpperCase() + providerType.slice(1)
+  );
 };
 
 /** 已配置的 Provider 信息 */
@@ -49,6 +71,8 @@ interface ConfiguredProvider {
   key: string;
   label: string;
   registryId: string;
+  fallbackRegistryId?: string; // 当 registryId 没有模型时的回退
+  type: string; // 原始 provider type，用于确定 API 协议
 }
 
 interface ChatNavbarProps {
@@ -79,7 +103,11 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
 
   // 用于防止无限循环
   const hasInitialized = useRef(false);
-  const prevProviderType = useRef(providerType);
+
+  // 别名配置缓存（用于 Antigravity/Kiro 等中转服务）
+  const [aliasConfig, setAliasConfig] = useState<ProviderAliasConfig | null>(
+    null,
+  );
 
   // 获取凭证池数据
   const { overview: oauthCredentials } = useProviderPool();
@@ -101,34 +129,50 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
   // 获取模型注册表数据
   const { models: registryModels } = useModelRegistry({ autoLoad: true });
 
-  // 计算已配置的 Provider 列表
+  // 计算已配置的 Provider 列表（完全动态，无白名单限制）
   const configuredProviders = useMemo(() => {
     const providerMap = new Map<string, ConfiguredProvider>();
 
-    // 从 OAuth 凭证提取 Provider
+    // 从 OAuth 凭证提取 Provider（动态，支持所有类型）
     oauthCredentials.forEach((overview) => {
       if (overview.credentials.length > 0) {
-        const config = CREDENTIAL_TYPE_CONFIG[overview.provider_type];
-        if (config && !providerMap.has(overview.provider_type)) {
-          providerMap.set(overview.provider_type, {
-            key: overview.provider_type,
-            label: config.label,
-            registryId: config.registryId,
+        const key = overview.provider_type;
+        if (!providerMap.has(key)) {
+          providerMap.set(key, {
+            key,
+            label: getProviderLabel(key),
+            registryId: getRegistryIdFromType(key),
+            type: key,
           });
         }
       }
     });
 
-    // 从 API Key Provider 提取（只包含有 API Key 的）
+    // 从 API Key Provider 提取（动态，支持所有自定义 Provider）
+    // 使用 provider.id 作为 key，确保每个 Provider 单独显示
+    // 特殊处理：如果与 OAuth 凭证冲突，使用带后缀的 key
     apiKeyProviders
       .filter((p) => p.api_key_count > 0 && p.enabled)
       .forEach((provider) => {
-        const config = API_KEY_PROVIDER_CONFIG[provider.type];
-        if (config && !providerMap.has(provider.type)) {
-          providerMap.set(provider.type, {
-            key: provider.type,
-            label: config.label,
-            registryId: config.registryId,
+        let key = provider.id;
+        let label = provider.name;
+
+        // 如果 key 与 OAuth 凭证冲突，添加 "_api_key" 后缀
+        // 例如：Gemini OAuth 的 key 是 "gemini"，Gemini API Key 的 key 变成 "gemini_api_key"
+        if (providerMap.has(key)) {
+          key = `${provider.id}_api_key`;
+          label = `${provider.name} API Key`;
+        }
+
+        if (!providerMap.has(key)) {
+          // 优先使用 provider.id 作为 registryId（适用于系统预设的 Provider，如 deepseek, moonshot）
+          // 如果模型注册表中没有该 id 的模型，则回退到使用 type 映射（适用于自定义 Provider）
+          providerMap.set(key, {
+            key,
+            label,
+            registryId: provider.id, // 先尝试用 id
+            fallbackRegistryId: getRegistryIdFromType(provider.type), // 回退用 type
+            type: provider.type,
           });
         }
       });
@@ -141,15 +185,64 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
     return configuredProviders.find((p) => p.key === providerType);
   }, [configuredProviders, providerType]);
 
+  // 当选中别名 Provider 时，加载别名配置
+  useEffect(() => {
+    if (selectedProvider && ALIAS_PROVIDERS.includes(selectedProvider.key)) {
+      getProviderAliasConfig(selectedProvider.key)
+        .then((config) => {
+          setAliasConfig(config);
+        })
+        .catch((error) => {
+          console.error("加载别名配置失败:", error);
+          setAliasConfig(null);
+        });
+    } else {
+      setAliasConfig(null);
+    }
+  }, [selectedProvider]);
+
   // 获取当前 Provider 的模型列表（从 model_registry 获取）
+  // 按照模型版本排序，最新的在前面
   const currentModels = useMemo(() => {
     if (!selectedProvider) return [];
 
+    // 对于别名 Provider（Antigravity、Kiro），使用别名配置中的模型列表
+    if (ALIAS_PROVIDERS.includes(selectedProvider.key) && aliasConfig) {
+      return aliasConfig.models;
+    }
+
     // 从 model_registry 获取模型
-    return registryModels
-      .filter((m) => m.provider_id === selectedProvider.registryId)
-      .map((m) => m.id);
-  }, [selectedProvider, registryModels]);
+    // 优先使用 registryId，如果没有模型则回退到 fallbackRegistryId
+    let models = registryModels.filter(
+      (m) => m.provider_id === selectedProvider.registryId,
+    );
+
+    // 如果没有找到模型，尝试使用 fallbackRegistryId
+    if (models.length === 0 && selectedProvider.fallbackRegistryId) {
+      models = registryModels.filter(
+        (m) => m.provider_id === selectedProvider.fallbackRegistryId,
+      );
+    }
+
+    // 按照 release_date 和 is_latest 排序
+    const sortedModels = [...models].sort((a, b) => {
+      // 1. is_latest 优先
+      if (a.is_latest && !b.is_latest) return -1;
+      if (!a.is_latest && b.is_latest) return 1;
+
+      // 2. 按 release_date 降序（最新的在前）
+      if (a.release_date && b.release_date) {
+        return b.release_date.localeCompare(a.release_date);
+      }
+      if (a.release_date && !b.release_date) return -1;
+      if (!a.release_date && b.release_date) return 1;
+
+      // 3. 按 display_name 字母序
+      return a.display_name.localeCompare(b.display_name);
+    });
+
+    return sortedModels.map((m) => m.id);
+  }, [selectedProvider, registryModels, aliasConfig]);
 
   // 初始化：优先选择服务器默认 Provider，否则选择第一个已配置的
   useEffect(() => {
@@ -183,16 +276,30 @@ export const ChatNavbar: React.FC<ChatNavbarProps> = ({
     providerType,
   ]);
 
-  // 当 Provider 切换时，自动选择第一个模型
-  useEffect(() => {
-    // 只在 Provider 真正变化时触发
-    if (providerType === prevProviderType.current) return;
-    prevProviderType.current = providerType;
+  // 当 Provider 切换或模型列表变化时，自动选择第一个模型
+  // 注意：使用 ref 跟踪 model 避免将其放入依赖中导致无限循环
+  const modelRef = useRef(model);
+  modelRef.current = model;
 
-    if (currentModels.length > 0 && !currentModels.includes(model)) {
+  useEffect(() => {
+    // 对于别名 Provider，等待别名配置加载完成
+    if (
+      selectedProvider &&
+      ALIAS_PROVIDERS.includes(selectedProvider.key) &&
+      !aliasConfig
+    ) {
+      return;
+    }
+
+    // 如果模型列表不为空，且当前模型为空或不在列表中，选择第一个模型
+    const currentModel = modelRef.current;
+    if (
+      currentModels.length > 0 &&
+      (!currentModel || !currentModels.includes(currentModel))
+    ) {
       setModel(currentModels[0]);
     }
-  }, [providerType, currentModels, model, setModel]);
+  }, [currentModels, setModel, selectedProvider, aliasConfig]);
 
   const selectedProviderLabel = selectedProvider?.label || providerType;
 

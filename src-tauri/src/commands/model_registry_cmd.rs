@@ -3,7 +3,7 @@
 //! 提供模型注册表相关的前端 API
 
 use crate::models::model_registry::{
-    EnhancedModelMetadata, ModelSyncState, ModelTier, UserModelPreference,
+    EnhancedModelMetadata, ModelSyncState, ModelTier, ProviderAliasConfig, UserModelPreference,
 };
 use crate::services::model_registry_service::ModelRegistryService;
 use std::sync::Arc;
@@ -24,17 +24,6 @@ pub async fn get_model_registry(
         .ok_or_else(|| "模型注册服务未初始化".to_string())?;
 
     Ok(service.get_all_models().await)
-}
-
-/// 刷新模型注册表（从 models.dev 获取最新数据）
-#[tauri::command]
-pub async fn refresh_model_registry(state: State<'_, ModelRegistryState>) -> Result<(), String> {
-    let guard = state.read().await;
-    let service = guard
-        .as_ref()
-        .ok_or_else(|| "模型注册服务未初始化".to_string())?;
-
-    service.refresh_from_models_dev().await
 }
 
 /// 搜索模型
@@ -150,4 +139,44 @@ pub async fn get_models_by_tier(
         .map_err(|_| format!("无效的服务等级: {}", tier))?;
 
     Ok(service.get_models_by_tier(tier).await)
+}
+
+/// 获取指定 Provider 的别名配置
+///
+/// 用于获取 Antigravity、Kiro 等中转服务的模型别名映射
+#[tauri::command]
+pub async fn get_provider_alias_config(
+    state: State<'_, ModelRegistryState>,
+    provider: String,
+) -> Result<Option<ProviderAliasConfig>, String> {
+    let guard = state.read().await;
+    let service = guard
+        .as_ref()
+        .ok_or_else(|| "模型注册服务未初始化".to_string())?;
+
+    Ok(service.get_provider_alias_config(&provider).await)
+}
+
+/// 获取所有 Provider 的别名配置
+#[tauri::command]
+pub async fn get_all_alias_configs(
+    state: State<'_, ModelRegistryState>,
+) -> Result<std::collections::HashMap<String, ProviderAliasConfig>, String> {
+    let guard = state.read().await;
+    let service = guard
+        .as_ref()
+        .ok_or_else(|| "模型注册服务未初始化".to_string())?;
+
+    Ok(service.get_all_alias_configs().await)
+}
+
+/// 刷新模型注册表（强制从内嵌资源重新加载）
+#[tauri::command]
+pub async fn refresh_model_registry(state: State<'_, ModelRegistryState>) -> Result<u32, String> {
+    let guard = state.read().await;
+    let service = guard
+        .as_ref()
+        .ok_or_else(|| "模型注册服务未初始化".to_string())?;
+
+    service.force_reload().await
 }

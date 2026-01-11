@@ -180,6 +180,10 @@ fn extract_supported_models(
                 "gemini-3-flash-preview".to_string(),
             ]
         }
+        CredentialData::IFlowOAuth { .. } | CredentialData::IFlowCookie { .. } => {
+            // iFlow 是 DeepSeek 的代理服务
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]
+        }
         _ => vec![],
     }
 }
@@ -194,6 +198,7 @@ fn map_pool_provider_type(pool_type: &str) -> ProviderType {
         "codex" => ProviderType::OpenAI,
         "qwen" => ProviderType::Custom,
         "antigravity" => ProviderType::Antigravity,
+        "iflow" | "deepseek" => ProviderType::Custom, // DeepSeek 及其代理 iFlow
         _ => ProviderType::Custom,
     }
 }

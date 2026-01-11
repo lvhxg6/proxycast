@@ -53,10 +53,10 @@ pub fn run() {
         credential_sync_service: credential_sync_service_state,
         token_cache_service: token_cache_service_state,
         machine_id_service: machine_id_service_state,
-        router_config: router_config_state,
         resilience_config: resilience_config_state,
         plugin_manager: plugin_manager_state,
         plugin_installer: plugin_installer_state,
+        plugin_rpc_manager: plugin_rpc_manager_state,
         telemetry: telemetry_state,
         flow_monitor: flow_monitor_state,
         flow_query_service: flow_query_service_state,
@@ -70,8 +70,12 @@ pub fn run() {
         native_agent: native_agent_state,
         oauth_plugin_manager: oauth_plugin_manager_state,
         orchestrator: orchestrator_state,
-        connect_state: connect_state,
+        connect_state,
         model_registry: model_registry_state,
+        global_config_manager: global_config_manager_state,
+        terminal_manager: terminal_manager_state,
+        webview_manager: webview_manager_state,
+        update_check_service: update_check_service_state,
         shared_stats,
         shared_tokens,
         shared_logger,
@@ -90,10 +94,12 @@ pub fn run() {
     let shared_logger_clone = shared_logger.clone();
     let flow_monitor_clone = flow_monitor.clone();
     let flow_interceptor_clone = flow_interceptor.clone();
+    let update_check_service_clone = update_check_service_state.0.clone();
 
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -128,11 +134,11 @@ pub fn run() {
         .manage(credential_sync_service_state)
         .manage(token_cache_service_state)
         .manage(machine_id_service_state)
-        .manage(router_config_state)
         .manage(resilience_config_state)
         .manage(telemetry_state)
         .manage(plugin_manager_state)
         .manage(plugin_installer_state)
+        .manage(plugin_rpc_manager_state)
         .manage(flow_monitor_state)
         .manage(flow_query_service_state)
         .manage(flow_interceptor_state)
@@ -147,6 +153,10 @@ pub fn run() {
         .manage(orchestrator_state)
         .manage(connect_state)
         .manage(model_registry_state)
+        .manage(global_config_manager_state)
+        .manage(terminal_manager_state)
+        .manage(webview_manager_state)
+        .manage(update_check_service_state)
         .on_window_event(move |window, event| {
             // 处理窗口关闭事件
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -173,6 +183,14 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // 设置 TerminalTool 的 AppHandle（用于发送事件到前端）
+            crate::agent::tools::set_terminal_tool_app_handle(app.handle().clone());
+            tracing::info!("[启动] TerminalTool AppHandle 已设置");
+
+            // 设置 TermScrollbackTool 的 AppHandle（用于发送事件到前端）
+            crate::agent::tools::set_term_scrollback_tool_app_handle(app.handle().clone());
+            tracing::info!("[启动] TermScrollbackTool AppHandle 已设置");
+
             // 初始化托盘管理器
             // Requirements 1.4: 应用启动时显示停止状态图标
             match TrayManager::new(app.handle()) {
@@ -189,6 +207,29 @@ pub fn run() {
                     let tray_state: TrayManagerState<tauri::Wry> =
                         TrayManagerState(Arc::new(tokio::sync::RwLock::new(None)));
                     app.manage(tray_state);
+                }
+            }
+
+            // 设置 GlobalConfigManager 的 AppHandle（用于向前端发送事件）
+            if let Some(config_manager) =
+                app.try_state::<crate::config::GlobalConfigManagerState>()
+            {
+                config_manager.0.set_app_handle(app.handle().clone());
+                tracing::info!("[启动] GlobalConfigManager AppHandle 已设置");
+            }
+
+            // 初始化截图对话模块
+            // _Requirements: 7.3_
+            {
+                let app_handle = app.handle();
+                match crate::screenshot::init(app_handle) {
+                    Ok(()) => {
+                        tracing::info!("[启动] 截图对话模块初始化成功");
+                    }
+                    Err(e) => {
+                        tracing::error!("[启动] 截图对话模块初始化失败: {}", e);
+                        // 截图模块初始化失败不影响应用运行
+                    }
                 }
             }
 
@@ -225,9 +266,42 @@ pub fn run() {
             {
                 let app_handle = app.handle().clone();
                 let db_clone = db_clone.clone();
+                // 获取资源目录路径
+                let mut resource_dir = app.path().resource_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+                // 检查 resources/models/index.json 是否存在
+                let models_index = resource_dir.join("resources/models/index.json");
+
+                if !models_index.exists() {
+                    // 开发模式：尝试多个可能的路径
+                    let possible_paths = [
+                        // 从 target/debug 回退到 src-tauri
+                        std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                            .map(|p| p.join("resources")),
+                        // 直接使用 target/debug/resources
+                        std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|p| p.to_path_buf())),
+                        // 使用当前工作目录
+                        std::env::current_dir().ok().map(|p| p.join("src-tauri")),
+                    ];
+
+                    for path in possible_paths.into_iter().flatten() {
+                        let test_index = path.join("resources/models/index.json");
+                        if test_index.exists() {
+                            resource_dir = path;
+                            break;
+                        }
+                    }
+                }
+
                 tauri::async_runtime::spawn(async move {
                     // 创建 ModelRegistryService
-                    let service = crate::services::model_registry_service::ModelRegistryService::new(db_clone);
+                    let mut service = crate::services::model_registry_service::ModelRegistryService::new(db_clone);
+                    // 设置资源目录路径
+                    service.set_resource_dir(resource_dir);
 
                     // 初始化服务
                     match service.initialize().await {
@@ -246,6 +320,17 @@ pub fn run() {
                         }
                     }
                 });
+            }
+
+            // 初始化终端会话管理器
+            {
+                let app_handle = app.handle().clone();
+                let terminal_manager = crate::terminal::TerminalSessionManager::new(app_handle.clone());
+                if let Some(state) = app_handle.try_state::<crate::commands::terminal_cmd::TerminalManagerState>() {
+                    let mut guard = state.inner().0.blocking_write();
+                    *guard = Some(terminal_manager);
+                    tracing::info!("[启动] 终端会话管理器初始化成功");
+                }
             }
 
             // 注册 Deep Link 事件处理器（仅 macOS）
@@ -481,6 +566,18 @@ pub fn run() {
                     }
                 }
             });
+
+            // 启动后台更新检查任务
+            let app_handle_for_update = app.handle().clone();
+            let update_service_for_task = update_check_service_clone.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::commands::update_cmd::start_background_update_check(
+                    app_handle_for_update,
+                    update_service_for_task,
+                ).await;
+            });
+            tracing::info!("[启动] 后台更新检查任务已启动");
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -686,21 +783,6 @@ pub fn run() {
             // Route commands
             commands::route_cmd::get_available_routes,
             commands::route_cmd::get_route_curl_examples,
-            // Router config commands
-            commands::router_cmd::get_model_aliases,
-            commands::router_cmd::add_model_alias,
-            commands::router_cmd::remove_model_alias,
-            commands::router_cmd::get_routing_rules,
-            commands::router_cmd::add_routing_rule,
-            commands::router_cmd::remove_routing_rule,
-            commands::router_cmd::update_routing_rule,
-            commands::router_cmd::get_exclusions,
-            commands::router_cmd::add_exclusion,
-            commands::router_cmd::remove_exclusion,
-            commands::router_cmd::set_router_default_provider,
-            commands::router_cmd::get_recommended_presets,
-            commands::router_cmd::apply_recommended_preset,
-            commands::router_cmd::clear_all_routing_config,
             // Resilience config commands
             commands::resilience_cmd::get_retry_config,
             commands::resilience_cmd::update_retry_config,
@@ -755,6 +837,12 @@ pub fn run() {
             commands::plugin_install_cmd::is_plugin_installed,
             // Plugin UI commands
             commands::plugin_cmd::get_plugins_with_ui,
+            commands::plugin_cmd::read_plugin_manifest_cmd,
+            commands::plugin_cmd::launch_plugin_ui,
+            // Plugin RPC commands
+            commands::plugin_rpc_cmd::plugin_rpc_connect,
+            commands::plugin_rpc_cmd::plugin_rpc_disconnect,
+            commands::plugin_rpc_cmd::plugin_rpc_call,
             // Flow Monitor commands
             commands::flow_monitor_cmd::query_flows,
             commands::flow_monitor_cmd::get_flow_detail,
@@ -927,6 +1015,9 @@ pub fn run() {
             commands::agent_cmd::agent_list_sessions,
             commands::agent_cmd::agent_get_session,
             commands::agent_cmd::agent_delete_session,
+            commands::agent_cmd::agent_get_session_messages,
+            commands::agent_cmd::agent_terminal_command_response,
+            commands::agent_cmd::agent_term_scrollback_response,
             // Native Agent commands
             commands::native_agent_cmd::native_agent_init,
             commands::native_agent_cmd::native_agent_status,
@@ -1024,6 +1115,68 @@ pub fn run() {
             commands::model_registry_cmd::get_model_sync_state,
             commands::model_registry_cmd::get_models_for_provider,
             commands::model_registry_cmd::get_models_by_tier,
+            commands::model_registry_cmd::get_provider_alias_config,
+            commands::model_registry_cmd::get_all_alias_configs,
+            // Terminal commands
+            commands::terminal_cmd::terminal_create_session,
+            commands::terminal_cmd::terminal_write,
+            commands::terminal_cmd::terminal_resize,
+            commands::terminal_cmd::terminal_close,
+            commands::terminal_cmd::terminal_list_sessions,
+            commands::terminal_cmd::terminal_get_session,
+            // Connection commands
+            commands::connection_cmd::connection_list,
+            commands::connection_cmd::connection_add,
+            commands::connection_cmd::connection_update,
+            commands::connection_cmd::connection_delete,
+            commands::connection_cmd::connection_get,
+            commands::connection_cmd::connection_get_config_path,
+            commands::connection_cmd::connection_get_raw_config,
+            commands::connection_cmd::connection_save_raw_config,
+            commands::connection_cmd::connection_test,
+            commands::connection_cmd::connection_import_ssh_host,
+            // Sysinfo commands
+            crate::services::sysinfo_service::get_sysinfo,
+            crate::services::sysinfo_service::subscribe_sysinfo,
+            crate::services::sysinfo_service::unsubscribe_sysinfo,
+            // File browser commands
+            crate::services::file_browser_service::list_dir,
+            crate::services::file_browser_service::read_file_preview_cmd,
+            crate::services::file_browser_service::get_home_dir,
+            crate::services::file_browser_service::create_file,
+            crate::services::file_browser_service::create_directory,
+            crate::services::file_browser_service::delete_file,
+            crate::services::file_browser_service::rename_file,
+            crate::services::file_browser_service::get_file_name,
+            crate::services::file_browser_service::reveal_in_finder,
+            crate::services::file_browser_service::open_with_default_app,
+            // Webview commands
+            commands::webview_cmd::create_webview_panel,
+            commands::webview_cmd::close_webview_panel,
+            commands::webview_cmd::navigate_webview_panel,
+            commands::webview_cmd::resize_webview_panel,
+            commands::webview_cmd::get_webview_panels,
+            commands::webview_cmd::focus_webview_panel,
+            // Screenshot Chat commands
+            // _Requirements: 1.1, 1.4, 1.5, 2.2, 2.4, 3.1, 5.1_
+            commands::screenshot_cmd::get_experimental_config,
+            commands::screenshot_cmd::save_experimental_config,
+            commands::screenshot_cmd::start_screenshot,
+            commands::screenshot_cmd::validate_shortcut,
+            commands::screenshot_cmd::update_screenshot_shortcut,
+            commands::screenshot_cmd::close_screenshot_chat_window,
+            commands::screenshot_cmd::read_image_as_base64,
+            commands::screenshot_cmd::send_screenshot_chat,
+            commands::screenshot_cmd::close_screenshot_chat_window,
+            commands::screenshot_cmd::read_image_as_base64,
+            // Update Check commands
+            commands::update_cmd::check_update,
+            commands::update_cmd::get_update_check_settings,
+            commands::update_cmd::set_update_check_settings,
+            commands::update_cmd::skip_update_version,
+            commands::update_cmd::update_last_check_timestamp,
+            commands::update_cmd::close_update_window,
+            commands::update_cmd::test_update_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -311,13 +311,206 @@ pub struct Config {
     /// 关闭时最小化到托盘（而不是退出应用）
     #[serde(default = "default_minimize_to_tray")]
     pub minimize_to_tray: bool,
+    /// 用户界面语言 ("zh" 或 "en")
+    #[serde(default = "default_language")]
+    pub language: String,
     /// 模型配置（动态加载 Provider 和模型列表）
     #[serde(default)]
     pub models: ModelsConfig,
+    /// Native Agent 配置
+    #[serde(default)]
+    pub agent: NativeAgentConfig,
+    /// 实验室功能配置
+    #[serde(default)]
+    pub experimental: ExperimentalFeatures,
+}
+
+// ============ Native Agent 配置类型 ============
+
+/// Native Agent 配置
+///
+/// 配置内置 Agent 的行为，包括系统提示词、工具使用规则等
+/// 参考 Manus Agent 的模块化设计，支持灵活配置
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NativeAgentConfig {
+    /// 是否使用默认系统提示词
+    /// 当 custom_system_prompt 为空时，如果此项为 true 则使用内置默认提示词
+    #[serde(default = "default_use_default_prompt")]
+    pub use_default_system_prompt: bool,
+    /// 自定义系统提示词
+    /// 如果设置了此项，将覆盖默认系统提示词
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_system_prompt: Option<String>,
+    /// 系统提示词模板文件路径（支持 ~ 展开）
+    /// 可以将系统提示词存储在外部文件中，便于管理和版本控制
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_file: Option<String>,
+    /// 默认模型
+    #[serde(default = "default_agent_model")]
+    pub default_model: String,
+    /// 默认温度参数
+    #[serde(default = "default_temperature")]
+    pub temperature: f32,
+    /// 默认最大 token 数
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: u32,
+}
+
+fn default_use_default_prompt() -> bool {
+    true
+}
+
+fn default_agent_model() -> String {
+    "claude-sonnet-4-20250514".to_string()
+}
+
+fn default_temperature() -> f32 {
+    0.7
+}
+
+fn default_max_tokens() -> u32 {
+    4096
+}
+
+impl Default for NativeAgentConfig {
+    fn default() -> Self {
+        Self {
+            use_default_system_prompt: default_use_default_prompt(),
+            custom_system_prompt: None,
+            system_prompt_file: None,
+            default_model: default_agent_model(),
+            temperature: default_temperature(),
+            max_tokens: default_max_tokens(),
+        }
+    }
+}
+
+// ============ 实验室功能配置类型 ============
+
+/// 截图对话功能配置
+///
+/// 配置截图对话功能的开关和快捷键
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ScreenshotChatConfig {
+    /// 是否启用截图对话功能
+    #[serde(default)]
+    pub enabled: bool,
+    /// 触发截图的全局快捷键
+    #[serde(default = "default_screenshot_shortcut")]
+    pub shortcut: String,
+}
+
+fn default_screenshot_shortcut() -> String {
+    "CommandOrControl+Alt+Q".to_string()
+}
+
+/// 自动更新检查配置
+///
+/// 配置自动检查更新的行为，符合 macOS/Windows 平台规范
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UpdateCheckConfig {
+    /// 是否启用自动检查更新
+    #[serde(default = "default_update_check_enabled")]
+    pub enabled: bool,
+    /// 检查间隔（小时），默认 24 小时
+    #[serde(default = "default_check_interval_hours")]
+    pub check_interval_hours: u32,
+    /// 是否显示系统通知
+    #[serde(default = "default_show_notification")]
+    pub show_notification: bool,
+    /// 上次检查时间（Unix 时间戳，秒）
+    #[serde(default)]
+    pub last_check_timestamp: u64,
+    /// 已跳过的版本（用户选择"跳过此版本"）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_version: Option<String>,
+}
+
+fn default_update_check_enabled() -> bool {
+    true
+}
+
+fn default_check_interval_hours() -> u32 {
+    24
+}
+
+fn default_show_notification() -> bool {
+    true
+}
+
+impl Default for UpdateCheckConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_update_check_enabled(),
+            check_interval_hours: default_check_interval_hours(),
+            show_notification: default_show_notification(),
+            last_check_timestamp: 0,
+            skipped_version: None,
+        }
+    }
+}
+
+impl Default for ScreenshotChatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            shortcut: default_screenshot_shortcut(),
+        }
+    }
+}
+
+/// 实验室功能配置
+///
+/// 管理所有实验性功能的开关和配置
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ExperimentalFeatures {
+    /// 截图对话功能配置
+    #[serde(default)]
+    pub screenshot_chat: ScreenshotChatConfig,
+    /// 自动更新检查配置
+    #[serde(default)]
+    pub update_check: UpdateCheckConfig,
+}
+
+impl NativeAgentConfig {
+    /// 获取有效的系统提示词
+    ///
+    /// 优先级：
+    /// 1. system_prompt_file（外部文件）
+    /// 2. custom_system_prompt（配置中的自定义提示词）
+    /// 3. 如果 use_default_system_prompt 为 true，返回 None 让调用方使用默认提示词
+    /// 4. 否则返回 None（不使用任何系统提示词）
+    pub fn get_effective_system_prompt(&self) -> Option<String> {
+        // 优先从文件加载
+        if let Some(file_path) = &self.system_prompt_file {
+            let expanded_path = crate::config::expand_tilde(file_path);
+            if let Ok(content) = std::fs::read_to_string(&expanded_path) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+
+        // 其次使用配置中的自定义提示词
+        if let Some(prompt) = &self.custom_system_prompt {
+            let trimmed = prompt.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+
+        // 返回 None，让调用方根据 use_default_system_prompt 决定是否使用默认提示词
+        None
+    }
 }
 
 fn default_minimize_to_tray() -> bool {
     true
+}
+
+fn default_language() -> String {
+    "zh".to_string()
 }
 
 /// 服务器配置
@@ -567,15 +760,9 @@ pub struct RoutingConfig {
     /// 默认 Provider
     #[serde(default = "default_provider")]
     pub default_provider: String,
-    /// 路由规则
-    #[serde(default)]
-    pub rules: Vec<RoutingRuleConfig>,
     /// 模型别名映射
     #[serde(default)]
     pub model_aliases: HashMap<String, String>,
-    /// 排除列表（按 Provider）
-    #[serde(default)]
-    pub exclusions: HashMap<String, Vec<String>>,
 }
 
 fn default_provider() -> String {
@@ -586,49 +773,9 @@ impl Default for RoutingConfig {
     fn default() -> Self {
         Self {
             default_provider: default_provider(),
-            rules: default_routing_rules(),
             model_aliases: HashMap::new(),
-            exclusions: HashMap::new(),
         }
     }
-}
-
-/// 默认路由规则
-///
-/// 为常见的模型模式提供默认路由：
-/// - `gemini-*` → Antigravity (Antigravity 支持 Gemini 系列模型)
-/// - `claude-*` → Kiro (默认使用 Kiro 处理 Claude 模型)
-fn default_routing_rules() -> Vec<RoutingRuleConfig> {
-    vec![
-        // Gemini 模型路由到 Antigravity
-        RoutingRuleConfig {
-            pattern: "gemini-*".to_string(),
-            provider: "antigravity".to_string(),
-            priority: 10,
-        },
-        // Claude 模型路由到 Kiro
-        RoutingRuleConfig {
-            pattern: "claude-*".to_string(),
-            provider: "kiro".to_string(),
-            priority: 10,
-        },
-    ]
-}
-
-/// 路由规则配置
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RoutingRuleConfig {
-    /// 模型模式（支持通配符）
-    pub pattern: String,
-    /// 目标 Provider
-    pub provider: String,
-    /// 优先级（数字越小优先级越高）
-    #[serde(default = "default_priority")]
-    pub priority: i32,
-}
-
-fn default_priority() -> i32 {
-    100
 }
 
 /// 重试配置
@@ -1074,6 +1221,10 @@ fn default_rule_enabled() -> bool {
     true
 }
 
+fn default_priority() -> i32 {
+    100
+}
+
 impl From<InjectionRuleConfig> for InjectionRule {
     fn from(config: InjectionRuleConfig) -> Self {
         let mut rule = InjectionRule::new(&config.id, &config.pattern, config.parameters);
@@ -1115,7 +1266,10 @@ impl Default for Config {
             ampcode: AmpConfig::default(),
             endpoint_providers: EndpointProvidersConfig::default(),
             minimize_to_tray: default_minimize_to_tray(),
+            language: default_language(),
             models: ModelsConfig::default(),
+            agent: NativeAgentConfig::default(),
+            experimental: ExperimentalFeatures::default(),
         }
     }
 }
@@ -1272,14 +1426,7 @@ mod unit_tests {
     fn test_routing_config_default() {
         let config = RoutingConfig::default();
         assert_eq!(config.default_provider, "kiro");
-        // 默认包含 gemini-* 和 claude-* 的路由规则
-        assert_eq!(config.rules.len(), 2);
-        assert_eq!(config.rules[0].pattern, "gemini-*");
-        assert_eq!(config.rules[0].provider, "antigravity");
-        assert_eq!(config.rules[1].pattern, "claude-*");
-        assert_eq!(config.rules[1].provider, "kiro");
         assert!(config.model_aliases.is_empty());
-        assert!(config.exclusions.is_empty());
     }
 
     #[test]
@@ -1401,5 +1548,47 @@ mod unit_tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: EndpointProvidersConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn test_screenshot_chat_config_default() {
+        let config = ScreenshotChatConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.shortcut, "CommandOrControl+Shift+S");
+    }
+
+    #[test]
+    fn test_experimental_features_default() {
+        let config = ExperimentalFeatures::default();
+        assert!(!config.screenshot_chat.enabled);
+        assert_eq!(config.screenshot_chat.shortcut, "CommandOrControl+Shift+S");
+    }
+
+    #[test]
+    fn test_experimental_features_serialization() {
+        let config = ExperimentalFeatures {
+            screenshot_chat: ScreenshotChatConfig {
+                enabled: true,
+                shortcut: "CommandOrControl+Alt+X".to_string(),
+            },
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        assert!(yaml.contains("enabled: true"));
+        assert!(yaml.contains("shortcut: CommandOrControl+Alt+X"));
+
+        let parsed: ExperimentalFeatures = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn test_config_with_experimental() {
+        let config = Config::default();
+        assert!(!config.experimental.screenshot_chat.enabled);
+        assert_eq!(
+            config.experimental.screenshot_chat.shortcut,
+            "CommandOrControl+Shift+S"
+        );
     }
 }

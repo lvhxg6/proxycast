@@ -130,47 +130,57 @@ impl std::fmt::Display for TokenRefreshError {
 
 impl std::error::Error for TokenRefreshError {}
 
-/// Antigravity 支持的模型列表
-pub const ANTIGRAVITY_MODELS: &[&str] = &[
-    "gemini-3-pro-preview",
-    "gemini-3-pro-image-preview",
-    "gemini-3-flash-preview",
-    "gemini-2.5-flash",
+/// Antigravity 支持的模型列表（fallback，当无法从 models 仓库获取时使用）
+pub const ANTIGRAVITY_MODELS_FALLBACK: &[&str] = &[
     "gemini-2.5-computer-use-preview-10-2025",
+    "gemini-3-pro-image-preview",
+    "gemini-3-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash-preview",
     "gemini-claude-sonnet-4-5",
     "gemini-claude-sonnet-4-5-thinking",
     "gemini-claude-opus-4-5-thinking",
 ];
 
+/// 模型别名映射（fallback，当无法从 models 仓库获取时使用）
+/// 格式：用户友好名称 -> 内部 API 名称
+pub const ANTIGRAVITY_ALIAS_FALLBACK: &[(&str, &str)] = &[
+    ("gemini-2.5-computer-use-preview-10-2025", "rev19-uic3-1p"),
+    ("gemini-3-pro-image-preview", "gemini-3-pro-image"),
+    ("gemini-3-pro-preview", "gemini-3-pro-high"),
+    ("gemini-3-flash-preview", "gemini-3-flash"),
+    ("gemini-2.5-flash-preview", "gemini-2.5-flash"),
+    ("gemini-claude-sonnet-4-5", "claude-sonnet-4-5"),
+    (
+        "gemini-claude-sonnet-4-5-thinking",
+        "claude-sonnet-4-5-thinking",
+    ),
+    (
+        "gemini-claude-opus-4-5-thinking",
+        "claude-opus-4-5-thinking",
+    ),
+];
+
 /// 模型别名映射（用户友好名称 -> 内部名称）
-fn alias_to_model_name(model: &str) -> &str {
-    match model {
-        "gemini-2.5-computer-use-preview-10-2025" => "rev19-uic3-1p",
-        "gemini-3-pro-image-preview" => "gemini-3-pro-image",
-        "gemini-3-pro-preview" => "gemini-3-pro-high",
-        "gemini-3-flash-preview" => "gemini-3-flash",
-        "gemini-2.5-flash" => "gemini-2.5-flash",
-        "gemini-claude-sonnet-4-5" => "claude-sonnet-4-5",
-        "gemini-claude-sonnet-4-5-thinking" => "claude-sonnet-4-5-thinking",
-        "gemini-claude-opus-4-5-thinking" => "claude-opus-4-5-thinking",
-        _ => model,
+/// 使用 fallback 映射，当无法从 ModelRegistryService 获取时使用
+fn alias_to_model_name(model: &str) -> String {
+    for (alias, internal) in ANTIGRAVITY_ALIAS_FALLBACK {
+        if *alias == model {
+            return internal.to_string();
+        }
     }
+    model.to_string()
 }
 
 /// 内部模型名称 -> 用户友好名称
 #[allow(dead_code)]
-fn model_name_to_alias(model: &str) -> &str {
-    match model {
-        "rev19-uic3-1p" => "gemini-2.5-computer-use-preview-10-2025",
-        "gemini-3-pro-image" => "gemini-3-pro-image-preview",
-        "gemini-3-pro-high" => "gemini-3-pro-preview",
-        "gemini-3-flash" => "gemini-3-flash-preview",
-        "gemini-2.5-flash" => "gemini-2.5-flash",
-        "claude-sonnet-4-5" => "gemini-claude-sonnet-4-5",
-        "claude-sonnet-4-5-thinking" => "gemini-claude-sonnet-4-5-thinking",
-        "claude-opus-4-5-thinking" => "gemini-claude-opus-4-5-thinking",
-        _ => model,
+fn model_name_to_alias(model: &str) -> String {
+    for (alias, internal) in ANTIGRAVITY_ALIAS_FALLBACK {
+        if *internal == model {
+            return alias.to_string();
+        }
     }
+    model.to_string()
 }
 
 /// 生成随机请求 ID
@@ -281,7 +291,10 @@ impl Default for AntigravityProvider {
                 ANTIGRAVITY_BASE_URL_DAILY.to_string(),
                 ANTIGRAVITY_BASE_URL_AUTOPUSH.to_string(),
             ],
-            available_models: ANTIGRAVITY_MODELS.iter().map(|s| s.to_string()).collect(),
+            available_models: ANTIGRAVITY_MODELS_FALLBACK
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
@@ -893,7 +906,7 @@ impl AntigravityProvider {
         let project_id = self.project_id.clone().unwrap_or_else(generate_project_id);
         let actual_model = alias_to_model_name(model);
 
-        let payload = self.build_antigravity_request(actual_model, &project_id, request_body);
+        let payload = self.build_antigravity_request(&actual_model, &project_id, request_body);
 
         let resp = self.call_api("generateContent", &payload).await?;
 

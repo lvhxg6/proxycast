@@ -207,20 +207,11 @@ impl ConfigManager {
         }
 
         // 合并路由配置
-        if !other.routing.rules.is_empty() {
-            self.config.routing.rules = other.routing.rules;
-        }
         if !other.routing.model_aliases.is_empty() {
             self.config
                 .routing
                 .model_aliases
                 .extend(other.routing.model_aliases);
-        }
-        if !other.routing.exclusions.is_empty() {
-            self.config
-                .routing
-                .exclusions
-                .extend(other.routing.exclusions);
         }
         if other.routing.default_provider != "kiro" {
             self.config.routing.default_provider = other.routing.default_provider;
@@ -790,15 +781,8 @@ providers:
     enabled: false
 routing:
   default_provider: "kiro"
-  rules:
-    - pattern: "claude-*"
-      provider: "kiro"
-      priority: 10
   model_aliases:
     gpt-4: "claude-sonnet-4-5-20250514"
-  exclusions:
-    gemini:
-      - "*-preview"
 retry:
   max_retries: 3
   base_delay_ms: 1000
@@ -811,15 +795,9 @@ logging:
 "#;
         let config = ConfigManager::parse_yaml(yaml).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
-        assert_eq!(config.routing.rules.len(), 1);
-        assert_eq!(config.routing.rules[0].pattern, "claude-*");
         assert_eq!(
             config.routing.model_aliases.get("gpt-4"),
             Some(&"claude-sonnet-4-5-20250514".to_string())
-        );
-        assert_eq!(
-            config.routing.exclusions.get("gemini").map(|v| v.len()),
-            Some(1)
         );
     }
 

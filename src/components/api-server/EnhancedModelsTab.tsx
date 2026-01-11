@@ -4,7 +4,7 @@
  * 使用 model_registry 数据，支持搜索、收藏、分组等功能
  */
 
-import { useState } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import {
   Cpu,
   RefreshCw,
@@ -40,14 +40,33 @@ export function EnhancedModelsTab() {
   } = useModelRegistry();
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [selectedTier, setSelectedTier] = useState<ModelTier | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+  const [displayLimit, setDisplayLimit] = useState(50); // 初始显示 50 个
+
+  // 防抖搜索
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchQuery(value);
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      setDebouncedSearchQuery(value);
+    }, 150);
+  }, []);
+
+  // 当筛选条件变化时，重置显示数量
+  useEffect(() => {
+    setDisplayLimit(50);
+  }, [debouncedSearchQuery, selectedProvider, selectedTier, showFavoritesOnly]);
 
   // 搜索和过滤
-  const filteredModels = (() => {
-    let result = searchQuery ? search(searchQuery) : models;
+  const filteredModels = useMemo(() => {
+    let result = debouncedSearchQuery ? search(debouncedSearchQuery) : models;
     if (selectedProvider) {
       result = result.filter((m) => m.provider_id === selectedProvider);
     }
@@ -58,9 +77,28 @@ export function EnhancedModelsTab() {
       result = result.filter((m) => preferences.get(m.id)?.is_favorite);
     }
     return result;
-  })();
+  }, [
+    debouncedSearchQuery,
+    models,
+    selectedProvider,
+    selectedTier,
+    showFavoritesOnly,
+    preferences,
+    search,
+  ]);
 
-  const providers = Array.from(groupedByProvider.keys());
+  // 分页显示的模型
+  const displayedModels = useMemo(() => {
+    return filteredModels.slice(0, displayLimit);
+  }, [filteredModels, displayLimit]);
+
+  const hasMore = filteredModels.length > displayLimit;
+
+  // 缓存 providers 列表，避免每次渲染都重新计算
+  const providers = useMemo(
+    () => Array.from(groupedByProvider.keys()),
+    [groupedByProvider],
+  );
 
   const copyModelId = (id: string) => {
     navigator.clipboard.writeText(id);
@@ -106,7 +144,7 @@ export function EnhancedModelsTab() {
               type="text"
               placeholder="搜索模型名称、ID、Provider..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => handleSearchChange(e.target.value)}
               className="w-full rounded-lg border bg-background pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
             />
           </div>
@@ -195,7 +233,9 @@ export function EnhancedModelsTab() {
           <div className="flex items-center justify-between">
             <span className="font-medium">模型列表</span>
             <span className="text-sm text-muted-foreground">
-              {filteredModels.length} 个模型
+              {hasMore
+                ? `显示 ${displayedModels.length} / ${filteredModels.length} 个模型`
+                : `${filteredModels.length} 个模型`}
             </span>
           </div>
         </div>
@@ -210,19 +250,31 @@ export function EnhancedModelsTab() {
             <p>暂无模型数据</p>
           </div>
         ) : (
-          <div className="divide-y max-h-[600px] overflow-y-auto">
-            {filteredModels.map((model) => (
-              <ModelRow
-                key={model.id}
-                model={model}
-                isFavorite={preferences.get(model.id)?.is_favorite || false}
-                usageCount={preferences.get(model.id)?.usage_count || 0}
-                copied={copied === model.id}
-                onCopy={() => copyModelId(model.id)}
-                onToggleFavorite={() => toggleFavorite(model.id)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="divide-y max-h-[600px] overflow-y-auto">
+              {displayedModels.map((model) => (
+                <ModelRow
+                  key={model.id}
+                  model={model}
+                  isFavorite={preferences.get(model.id)?.is_favorite || false}
+                  usageCount={preferences.get(model.id)?.usage_count || 0}
+                  copied={copied === model.id}
+                  onCopy={() => copyModelId(model.id)}
+                  onToggleFavorite={() => toggleFavorite(model.id)}
+                />
+              ))}
+            </div>
+            {hasMore && (
+              <div className="border-t px-4 py-3 flex justify-center">
+                <button
+                  onClick={() => setDisplayLimit((prev) => prev + 50)}
+                  className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted"
+                >
+                  加载更多 (还有 {filteredModels.length - displayLimit} 个)
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

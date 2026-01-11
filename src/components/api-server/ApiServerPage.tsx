@@ -7,6 +7,7 @@ import {
   ChevronUp,
   RefreshCw,
 } from "lucide-react";
+import * as Select from "@radix-ui/react-select";
 import { LogsTab } from "./LogsTab";
 import { RoutesTab } from "./RoutesTab";
 import { ProviderIcon } from "@/icons/providers";
@@ -65,6 +66,7 @@ export function ApiServerPage() {
 
   // Config editing
   const [editPort, setEditPort] = useState<string>("");
+  const [editHost, setEditHost] = useState<string>("");
   const [editApiKey, setEditApiKey] = useState<string>("");
   const [defaultProvider, setDefaultProviderState] = useState<string>("kiro");
 
@@ -100,6 +102,7 @@ export function ApiServerPage() {
       const c = await getConfig();
       setConfig(c);
       setEditPort(c.server.port.toString());
+      setEditHost(c.server.host);
       setEditApiKey(c.server.api_key);
     } catch (e) {
       console.error(e);
@@ -172,6 +175,7 @@ export function ApiServerPage() {
         ...config,
         server: {
           ...config.server,
+          host: editHost,
           port: parseInt(editPort) || 8999,
           api_key: editApiKey,
         },
@@ -225,6 +229,19 @@ export function ApiServerPage() {
     azure_openai: "openai",
     aws_bedrock: "claude",
     ollama: "ollama",
+  };
+
+  // 根据 Provider type 获取图标类型（用于自定义 Provider）
+  const getIconTypeFromProviderType = (providerType: string): string => {
+    const typeIconMap: Record<string, string> = {
+      openai: "openai",
+      anthropic: "claude",
+      gemini: "gemini",
+      "azure-openai": "openai",
+      vertexai: "gemini",
+      ollama: "ollama",
+    };
+    return typeIconMap[providerType.toLowerCase()] || "openai";
   };
 
   const [poolOverview, setPoolOverview] = useState<ProviderPoolOverview[]>([]);
@@ -292,11 +309,12 @@ export function ApiServerPage() {
     });
 
     // 添加 API Key Provider 中有 API Key 的 Provider
+    // 使用 provider.id 作为 key，确保每个 Provider 单独显示
     apiKeyProviders.forEach((provider) => {
       const enabledKeys = provider.api_keys.filter((k) => k.enabled);
       if (enabledKeys.length > 0 && provider.enabled) {
-        // 将 API Key Provider 类型映射到统一的 ID
-        const id = mapApiKeyProviderToId(provider.type);
+        // 使用 provider.id 而不是 type 映射，确保自定义 Provider 单独显示
+        const id = provider.id;
         const existing = providerMap.get(id);
         if (existing) {
           existing.apiKeyCount = enabledKeys.length;
@@ -306,10 +324,15 @@ export function ApiServerPage() {
               ? "both"
               : "api_key";
         } else {
+          // 根据 provider.type 确定图标类型（优先使用 id 映射，否则使用 type 映射）
+          const iconType =
+            providerIconMap[id] ||
+            providerIconMap[provider.type] ||
+            getIconTypeFromProviderType(provider.type);
           providerMap.set(id, {
             id,
             label: providerLabels[id] || provider.name,
-            iconType: providerIconMap[id] || "openai",
+            iconType,
             source: "api_key",
             oauthCount: 0,
             apiKeyCount: enabledKeys.length,
@@ -375,6 +398,14 @@ export function ApiServerPage() {
     }
   }, [providerSwitchMsg]);
 
+  // 当切换功能 Tab 时，重置所有测试状态
+  useEffect(() => {
+    if (activeTab !== "server") {
+      setTestResults({});
+      setExpandedTest(null);
+    }
+  }, [activeTab]);
+
   const handleSetDefaultProvider = async (providerId: string) => {
     try {
       await setDefaultProvider(providerId);
@@ -409,9 +440,23 @@ export function ApiServerPage() {
     }
   };
 
-  const serverUrl = status
-    ? `http://${status.host}:${status.port}`
-    : `http://localhost:${config?.server.port ?? 8999}`;
+  // 根据监听地址智能选择测试 URL
+  // - 127.0.0.1: 使用 127.0.0.1（仅本机）
+  // - 0.0.0.0: 使用 127.0.0.1（本机访问所有接口）
+  // - 局域网 IP: 使用该 IP（允许局域网测试）
+  const getTestUrl = (host: string, port: number) => {
+    if (host === "0.0.0.0") {
+      return `http://127.0.0.1:${port}`;
+    }
+    return `http://${host}:${port}`;
+  };
+
+  // 使用 editHost 而不是 status.host，这样可以实时反映用户的选择
+  const currentHost = status?.running ? status.host : editHost;
+  const currentPort = status?.running
+    ? status.port
+    : parseInt(editPort) || 8999;
+  const serverUrl = getTestUrl(currentHost, currentPort);
   const apiKey = config?.server.api_key ?? "";
 
   // 根据 Provider 类型获取测试模型
@@ -427,6 +472,8 @@ export function ApiServerPage() {
         return "gpt-4o";
       case "claude":
         return "claude-sonnet-4-20250514";
+      case "deepseek":
+        return "deepseek-chat";
       case "kiro":
       default:
         return "claude-opus-4-5-20251101";
@@ -614,36 +661,23 @@ export function ApiServerPage() {
     <div className="space-y-4">
       <div className="flex items-start justify-between">
         <div className="flex-1">
-          <h2 className="text-2xl font-bold">API Server</h2>
-          <p className="text-muted-foreground text-sm">
-            本地代理服务器，支持 OpenAI/Anthropic 格式
-            {networkInfo && (
-              <>
-                {" "}
-                <code className="px-1 py-0.5 rounded bg-muted text-xs">
-                  {networkInfo.localhost}:{config?.server.port ?? 8999}
-                </code>
-                {networkInfo.lan_ip && (
-                  <>
-                    {" | "}
-                    <code className="px-1 py-0.5 rounded bg-muted text-xs">
-                      {networkInfo.lan_ip}:{config?.server.port ?? 8999}
-                    </code>
-                    <span className="text-xs"> (局域网)</span>
-                  </>
-                )}
-              </>
-            )}
-            <span className="ml-2">
-              <span
-                className={`inline-block h-2 w-2 rounded-full ${status?.running ? "bg-green-500" : "bg-red-500"}`}
-              />{" "}
-              {status?.running ? "运行中" : "已停止"}
-              {" · "}
-              {status?.requests || 0} 请求
-              {" · "}
+          <div className="flex items-end gap-3">
+            <h2 className="text-2xl font-bold">API Server</h2>
+            <div className="flex items-center gap-2 text-sm text-muted-foreground pb-0.5">
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={`inline-block h-2 w-2 rounded-full ${status?.running ? "bg-green-500" : "bg-red-500"}`}
+                />
+                {status?.running ? "运行中" : "已停止"}
+              </span>
+              <span>·</span>
+              <span>{status?.requests || 0} 请求</span>
+              <span>·</span>
               <span className="capitalize">{defaultProvider}</span>
-            </span>
+            </div>
+          </div>
+          <p className="text-muted-foreground text-sm mt-1">
+            本地代理服务器，支持 OpenAI/Anthropic 格式
           </p>
         </div>
       </div>
@@ -707,14 +741,89 @@ export function ApiServerPage() {
                     ? "停止服务"
                     : "启动服务"}
               </button>
-              <div className="flex items-center gap-3 text-sm">
+              <div className="flex items-center gap-3 text-sm flex-wrap">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">监听地址:</span>
+                  <Select.Root
+                    value={editHost}
+                    onValueChange={setEditHost}
+                    disabled={status?.running}
+                  >
+                    <Select.Trigger className="inline-flex min-w-[200px] items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50">
+                      <Select.Value />
+                      <Select.Icon>
+                        <ChevronDown className="h-4 w-4 opacity-50" />
+                      </Select.Icon>
+                    </Select.Trigger>
+                    <Select.Portal>
+                      <Select.Content className="relative z-50 min-w-[200px] overflow-hidden rounded-md border border-border bg-white dark:bg-gray-900 text-foreground shadow-lg animate-in fade-in-80 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2">
+                        <Select.Viewport className="p-1 bg-white dark:bg-gray-900">
+                          <Select.Item
+                            value="127.0.0.1"
+                            className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                          >
+                            <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+                              <Check className="h-4 w-4" />
+                            </Select.ItemIndicator>
+                            <Select.ItemText>
+                              <span className="flex items-center gap-2">
+                                <span className="font-mono">127.0.0.1</span>
+                                <span className="text-xs text-muted-foreground">
+                                  (仅本机)
+                                </span>
+                              </span>
+                            </Select.ItemText>
+                          </Select.Item>
+
+                          <Select.Item
+                            value="0.0.0.0"
+                            className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                          >
+                            <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+                              <Check className="h-4 w-4" />
+                            </Select.ItemIndicator>
+                            <Select.ItemText>
+                              <span className="flex items-center gap-2">
+                                <span className="font-mono">0.0.0.0</span>
+                                <span className="text-xs text-muted-foreground">
+                                  (所有接口)
+                                </span>
+                              </span>
+                            </Select.ItemText>
+                          </Select.Item>
+
+                          {networkInfo?.all_ips.map((ip) => (
+                            <Select.Item
+                              key={ip}
+                              value={ip}
+                              className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                            >
+                              <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+                                <Check className="h-4 w-4" />
+                              </Select.ItemIndicator>
+                              <Select.ItemText>
+                                <span className="flex items-center gap-2">
+                                  <span className="font-mono">{ip}</span>
+                                  <span className="text-xs text-muted-foreground">
+                                    (局域网)
+                                  </span>
+                                </span>
+                              </Select.ItemText>
+                            </Select.Item>
+                          ))}
+                        </Select.Viewport>
+                      </Select.Content>
+                    </Select.Portal>
+                  </Select.Root>
+                </div>
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">端口:</span>
                   <input
                     type="number"
                     value={editPort}
                     onChange={(e) => setEditPort(e.target.value)}
-                    className="w-20 rounded border bg-background px-2 py-1 text-sm"
+                    className="w-20 rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={status?.running}
                   />
                 </div>
                 <div className="flex items-center gap-2">
@@ -723,18 +832,34 @@ export function ApiServerPage() {
                     type="text"
                     value={editApiKey}
                     onChange={(e) => setEditApiKey(e.target.value)}
-                    className="w-40 rounded border bg-background px-2 py-1 text-sm"
+                    className="w-40 rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={status?.running}
                   />
                 </div>
                 <button
                   onClick={handleSaveServerConfig}
-                  disabled={loading}
-                  className="rounded border px-3 py-1 text-sm hover:bg-muted disabled:opacity-50"
+                  disabled={loading || status?.running}
+                  className="rounded-md border border-input bg-background px-4 py-1.5 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  title={status?.running ? "请先停止服务再修改配置" : ""}
                 >
                   保存
                 </button>
               </div>
             </div>
+            {status?.running && (
+              <div className="mt-3 flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                <span>ℹ️</span>
+                <span>修改配置需要先停止服务</span>
+              </div>
+            )}
+            {(editHost === "0.0.0.0" ||
+              (networkInfo?.all_ips.includes(editHost) ?? false)) &&
+              !status?.running && (
+                <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-500">
+                  <span>⚠️</span>
+                  <span>局域网访问需要使用非默认 API Key 以确保安全</span>
+                </div>
+              )}
           </div>
 
           {/* Default Provider - 动态显示有凭证的 Provider */}
@@ -803,7 +928,15 @@ export function ApiServerPage() {
               ).filter((cred) => !cred.is_disabled);
 
               // 获取 API Key 凭证 - 查找所有映射到当前 defaultProvider 的 API Key Provider
+              // 支持两种匹配方式：
+              // 1. 通过 provider.id 直接匹配（用于自定义 Provider）
+              // 2. 通过 type 映射匹配（用于内置 Provider）
               const matchingApiKeyProviders = apiKeyProviders.filter((p) => {
+                // 首先尝试直接通过 id 匹配
+                if (p.id === defaultProvider && p.enabled) {
+                  return true;
+                }
+                // 然后尝试通过 type 映射匹配
                 const mappedId = mapApiKeyProviderToId(p.type);
                 return mappedId === defaultProvider && p.enabled;
               });

@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { useModelRegistry } from "@/hooks/useModelRegistry";
 import { useProviderPool } from "@/hooks/useProviderPool";
 import { useApiKeyProvider } from "@/hooks/useApiKeyProvider";
+import { getProviderAliasConfig } from "@/lib/api/modelRegistry";
 import {
   Check,
   ChevronRight,
@@ -18,7 +19,10 @@ import {
   Loader2,
   AlertCircle,
 } from "lucide-react";
-import type { EnhancedModelMetadata } from "@/lib/types/modelRegistry";
+import type {
+  EnhancedModelMetadata,
+  ProviderAliasConfig,
+} from "@/lib/types/modelRegistry";
 
 // ============================================================================
 // 类型定义
@@ -50,16 +54,16 @@ interface ConfiguredProvider {
 
 /** OAuth 凭证类型到 Provider ID 的映射 */
 const CREDENTIAL_TYPE_TO_PROVIDER_ID: Record<string, string> = {
-  kiro: "anthropic",
-  gemini: "google",
+  kiro: "kiro",
+  gemini: "gemini_oauth",
   qwen: "alibaba",
-  antigravity: "google",
+  antigravity: "antigravity",
   codex: "openai",
   claude_oauth: "anthropic",
-  iflow: "anthropic",
+  iflow: "iflow",
   openai: "openai",
   claude: "anthropic",
-  gemini_api_key: "google",
+  gemini_api_key: "gemini_api_key",
 };
 
 /** API Key Provider 类型到 Registry ID 的映射 */
@@ -81,9 +85,23 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   google: "Google",
+  gemini_oauth: "Gemini OAuth",
+  gemini_api_key: "Gemini API Key",
   alibaba: "阿里云",
   ollama: "Ollama",
   custom: "自定义",
+  antigravity: "Antigravity",
+  kiro: "Kiro",
+  iflow: "iFlow",
+};
+
+/** 别名 Provider 列表（使用别名配置而非标准模型注册表） */
+const ALIAS_PROVIDERS = ["antigravity", "kiro"];
+
+/** Provider ID 到模型注册表 Provider ID 的映射（用于过滤模型） */
+const PROVIDER_TO_REGISTRY_MAPPING: Record<string, string> = {
+  gemini_oauth: "google",
+  gemini_api_key: "google",
 };
 
 // ============================================================================
@@ -228,6 +246,10 @@ export const ProviderModelSelector: React.FC<ProviderModelSelectorProps> = ({
   const [selectedModelId, setSelectedModelId] = useState<string | null>(
     initialModelId || null,
   );
+  const [aliasConfig, setAliasConfig] = useState<ProviderAliasConfig | null>(
+    null,
+  );
+  const [aliasLoading, setAliasLoading] = useState(false);
 
   // 获取凭证池数据
   const { overview: oauthCredentials, loading: oauthLoading } =
@@ -243,6 +265,26 @@ export const ProviderModelSelector: React.FC<ProviderModelSelectorProps> = ({
   } = useModelRegistry({
     autoLoad: true,
   });
+
+  // 当选中别名 Provider 时，加载别名配置
+  useEffect(() => {
+    if (selectedProviderId && ALIAS_PROVIDERS.includes(selectedProviderId)) {
+      setAliasLoading(true);
+      getProviderAliasConfig(selectedProviderId)
+        .then((config) => {
+          setAliasConfig(config);
+        })
+        .catch((error) => {
+          console.error("加载别名配置失败:", error);
+          setAliasConfig(null);
+        })
+        .finally(() => {
+          setAliasLoading(false);
+        });
+    } else {
+      setAliasConfig(null);
+    }
+  }, [selectedProviderId]);
 
   // 计算已配置的 Provider 列表
   const configuredProviders = useMemo(() => {
@@ -300,10 +342,55 @@ export const ProviderModelSelector: React.FC<ProviderModelSelectorProps> = ({
   }, [selectedProviderId, configuredProviders]);
 
   // 过滤当前 Provider 的模型
-  const filteredModels = useMemo(() => {
+  const filteredModels = useMemo((): EnhancedModelMetadata[] => {
     if (!selectedProviderId) return [];
-    return models.filter((m) => m.provider_id === selectedProviderId);
-  }, [models, selectedProviderId]);
+
+    // 对于别名 Provider（Antigravity、Kiro），使用别名配置中的模型列表
+    if (ALIAS_PROVIDERS.includes(selectedProviderId) && aliasConfig) {
+      // 将别名配置中的模型转换为 EnhancedModelMetadata 格式
+      return aliasConfig.models.map((modelName): EnhancedModelMetadata => {
+        const aliasInfo = aliasConfig.aliases[modelName];
+        return {
+          id: modelName,
+          display_name: modelName,
+          provider_id: selectedProviderId,
+          provider_name:
+            PROVIDER_DISPLAY_NAMES[selectedProviderId] || selectedProviderId,
+          family: aliasInfo?.provider || null,
+          tier: "pro" as const,
+          capabilities: {
+            vision: false,
+            tools: true,
+            streaming: true,
+            json_mode: true,
+            function_calling: true,
+            reasoning: modelName.includes("thinking"),
+          },
+          pricing: null,
+          limits: {
+            context_length: null,
+            max_output_tokens: null,
+            requests_per_minute: null,
+            tokens_per_minute: null,
+          },
+          status: "active" as const,
+          release_date: null,
+          is_latest: false,
+          description:
+            aliasInfo?.description || `${aliasInfo?.actual || modelName}`,
+          source: "custom" as const,
+          created_at: Date.now() / 1000,
+          updated_at: Date.now() / 1000,
+        };
+      });
+    }
+
+    // 对于标准 Provider，从模型注册表过滤
+    // 使用映射表将 UI Provider ID 转换为模型注册表 Provider ID
+    const registryProviderId =
+      PROVIDER_TO_REGISTRY_MAPPING[selectedProviderId] || selectedProviderId;
+    return models.filter((m) => m.provider_id === registryProviderId);
+  }, [models, selectedProviderId, aliasConfig]);
 
   // 选择 Provider
   const handleSelectProvider = useCallback((providerId: string) => {
@@ -381,7 +468,7 @@ export const ProviderModelSelector: React.FC<ProviderModelSelectorProps> = ({
           </p>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {modelsLoading ? (
+          {modelsLoading || aliasLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>

@@ -20,9 +20,10 @@ use crate::commands::plugin_cmd::PluginManagerState;
 use crate::commands::plugin_install_cmd::PluginInstallerState;
 use crate::commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServiceState};
 use crate::commands::resilience_cmd::ResilienceConfigState;
-use crate::commands::router_cmd::RouterConfigState;
 use crate::commands::skill_cmd::SkillServiceState;
-use crate::config::{self, Config};
+use crate::commands::terminal_cmd::TerminalManagerState;
+use crate::commands::webview_cmd::{WebviewManagerState, WebviewManagerWrapper};
+use crate::config::{self, Config, ConfigManager, GlobalConfigManager, GlobalConfigManagerState};
 use crate::database::{self, DbConnection};
 use crate::flow_monitor::{
     BatchOperations, BookmarkManager, EnhancedStatsService, FlowFileStore, FlowInterceptor,
@@ -36,10 +37,11 @@ use crate::services::api_key_provider_service::ApiKeyProviderService;
 use crate::services::provider_pool_service::ProviderPoolService;
 use crate::services::skill_service::SkillService;
 use crate::services::token_cache_service::TokenCacheService;
+use crate::services::update_check_service::UpdateCheckServiceState;
 use crate::telemetry;
 
 use super::types::{AppState, LogState, TokenCacheServiceState};
-use super::utils::{generate_api_key, is_loopback_host};
+use super::utils::{generate_api_key, is_non_local_bind, is_valid_bind_host};
 
 /// 配置验证错误
 #[derive(Debug)]
@@ -47,7 +49,7 @@ pub enum ConfigError {
     LoadFailed(String),
     SaveFailed(String),
     InvalidHost,
-    DefaultApiKey,
+    DefaultApiKeyWithNonLocalBind,
     TlsNotSupported,
     RemoteManagementNotSupported,
 }
@@ -58,9 +60,15 @@ impl std::fmt::Display for ConfigError {
             ConfigError::LoadFailed(e) => write!(f, "配置加载失败: {}", e),
             ConfigError::SaveFailed(e) => write!(f, "配置保存失败: {}", e),
             ConfigError::InvalidHost => {
-                write!(f, "当前版本仅支持本地监听，请使用 127.0.0.1/localhost/::1")
+                write!(
+                    f,
+                    "无效的监听地址。允许的地址：127.0.0.1、localhost、::1、0.0.0.0、::"
+                )
             }
-            ConfigError::DefaultApiKey => write!(f, "检测到使用默认 API key，请配置强密钥"),
+            ConfigError::DefaultApiKeyWithNonLocalBind => write!(
+                f,
+                "监听所有网络接口 (0.0.0.0 或 ::) 时，必须设置非默认的 API Key"
+            ),
             ConfigError::TlsNotSupported => write!(f, "当前版本尚未支持 TLS"),
             ConfigError::RemoteManagementNotSupported => {
                 write!(f, "远程管理需要 TLS 支持，当前版本未启用")
@@ -73,22 +81,24 @@ impl std::fmt::Display for ConfigError {
 pub fn load_and_validate_config() -> Result<Config, ConfigError> {
     let mut config = config::load_config().map_err(|e| ConfigError::LoadFailed(e.to_string()))?;
 
-    // 自动生成 API key（如果使用默认值）
-    if config.server.api_key == config::DEFAULT_API_KEY {
+    // 验证主机地址
+    if !is_valid_bind_host(&config.server.host) {
+        return Err(ConfigError::InvalidHost);
+    }
+
+    let is_non_local = is_non_local_bind(&config.server.host);
+
+    // 如果是本地绑定且使用默认 API key，自动生成新密钥
+    if !is_non_local && config.server.api_key == config::DEFAULT_API_KEY {
         let new_key = generate_api_key();
         config.server.api_key = new_key;
         config::save_config(&config).map_err(|e| ConfigError::SaveFailed(e.to_string()))?;
         tracing::info!("检测到默认 API key，已自动生成并保存新密钥");
     }
 
-    // 验证主机地址
-    if !is_loopback_host(&config.server.host) {
-        return Err(ConfigError::InvalidHost);
-    }
-
-    // 再次检查 API key（防止保存失败后继续）
-    if config.server.api_key == config::DEFAULT_API_KEY {
-        return Err(ConfigError::DefaultApiKey);
+    // 如果是非本地绑定，必须使用非默认 API key
+    if is_non_local && config.server.api_key == config::DEFAULT_API_KEY {
+        return Err(ConfigError::DefaultApiKeyWithNonLocalBind);
     }
 
     // 检查 TLS 配置
@@ -115,10 +125,10 @@ pub struct AppStates {
     pub credential_sync_service: CredentialSyncServiceState,
     pub token_cache_service: TokenCacheServiceState,
     pub machine_id_service: MachineIdState,
-    pub router_config: RouterConfigState,
     pub resilience_config: ResilienceConfigState,
     pub plugin_manager: PluginManagerState,
     pub plugin_installer: PluginInstallerState,
+    pub plugin_rpc_manager: crate::commands::plugin_rpc_cmd::PluginRpcManagerState,
     pub telemetry: crate::commands::telemetry_cmd::TelemetryState,
     pub flow_monitor: FlowMonitorState,
     pub flow_query_service: FlowQueryServiceState,
@@ -134,6 +144,10 @@ pub struct AppStates {
     pub orchestrator: OrchestratorState,
     pub connect_state: ConnectStateWrapper,
     pub model_registry: ModelRegistryState,
+    pub global_config_manager: GlobalConfigManagerState,
+    pub terminal_manager: TerminalManagerState,
+    pub webview_manager: WebviewManagerWrapper,
+    pub update_check_service: UpdateCheckServiceState,
     // 用于 setup hook 的共享实例
     pub shared_stats: Arc<parking_lot::RwLock<telemetry::StatsAggregator>>,
     pub shared_tokens: Arc<parking_lot::RwLock<telemetry::TokenTracker>>,
@@ -172,7 +186,6 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
         .map_err(|e| format!("MachineIdService 初始化失败: {}", e))?;
     let machine_id_service_state: MachineIdState = Arc::new(RwLock::new(machine_id_service));
 
-    let router_config_state = RouterConfigState::default();
     let resilience_config_state = ResilienceConfigState::default();
 
     // 插件管理器
@@ -181,6 +194,9 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
 
     // 插件安装器
     let plugin_installer_state = init_plugin_installer()?;
+
+    // 插件 RPC 管理器
+    let plugin_rpc_manager_state = crate::commands::plugin_rpc_cmd::PluginRpcManagerState::new();
 
     // 遥测系统
     let (telemetry_state, shared_stats, shared_tokens, shared_logger) = init_telemetry(config)?;
@@ -212,6 +228,21 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
     // 初始化 Model Registry 状态（延迟初始化，在 setup hook 中完成）
     let model_registry_state: ModelRegistryState = Arc::new(RwLock::new(None));
 
+    // 初始化终端管理器状态（延迟初始化，在 setup hook 中完成）
+    let terminal_manager_state = TerminalManagerState(Arc::new(RwLock::new(None)));
+
+    // 初始化 Webview 管理器状态
+    let webview_manager_state =
+        WebviewManagerWrapper(Arc::new(RwLock::new(WebviewManagerState::new())));
+
+    // 初始化更新检查服务
+    let update_check_service_state = UpdateCheckServiceState::new();
+
+    // 初始化全局配置管理器
+    let config_path = ConfigManager::default_config_path();
+    let global_config_manager = GlobalConfigManager::new(config.clone(), config_path);
+    let global_config_manager_state = GlobalConfigManagerState::new(global_config_manager);
+
     // 初始化默认技能仓库
     {
         let conn = db.lock().expect("Failed to lock database");
@@ -229,10 +260,10 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
         credential_sync_service: credential_sync_service_state,
         token_cache_service: token_cache_service_state,
         machine_id_service: machine_id_service_state,
-        router_config: router_config_state,
         resilience_config: resilience_config_state,
         plugin_manager: plugin_manager_state,
         plugin_installer: plugin_installer_state,
+        plugin_rpc_manager: plugin_rpc_manager_state,
         telemetry: telemetry_state,
         flow_monitor: flow_monitor_state,
         flow_query_service: flow_query_service_state,
@@ -248,6 +279,10 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
         orchestrator: orchestrator_state,
         connect_state,
         model_registry: model_registry_state,
+        global_config_manager: global_config_manager_state,
+        terminal_manager: terminal_manager_state,
+        webview_manager: webview_manager_state,
+        update_check_service: update_check_service_state,
         shared_stats,
         shared_tokens,
         shared_logger,

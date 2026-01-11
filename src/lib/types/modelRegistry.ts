@@ -142,3 +142,29 @@ export interface ModelRegistryState {
   /** 错误信息 */
   error: string | null;
 }
+
+/** 单个模型别名映射 */
+export interface ModelAlias {
+  /** 实际模型 ID（如 "claude-sonnet-4-5-20250929"） */
+  actual: string;
+  /** 内部 API 名称 */
+  internal_name: string | null;
+  /** 原始 Provider（如 "anthropic"） */
+  provider: string | null;
+  /** 描述 */
+  description: string | null;
+}
+
+/** Provider 的别名配置 */
+export interface ProviderAliasConfig {
+  /** Provider ID（如 "kiro"、"antigravity"） */
+  provider: string;
+  /** 描述 */
+  description: string | null;
+  /** 支持的模型列表 */
+  models: string[];
+  /** 别名映射（模型名 -> 别名配置） */
+  aliases: Record<string, ModelAlias>;
+  /** 更新时间 */
+  updated_at: string | null;
+}

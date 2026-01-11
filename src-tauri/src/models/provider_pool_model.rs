@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::providers::ANTIGRAVITY_MODELS_FALLBACK;
+
 /// 凭证来源枚举
 /// 用于标识凭证是如何添加到凭证池的
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -315,19 +317,10 @@ impl ProviderCredential {
         }
 
         // Antigravity 凭证只支持特定的模型
+        // 使用 providers::antigravity 中定义的模型列表（fallback）
+        // 实际模型列表由 models/aliases/antigravity.json 定义
         if let CredentialData::AntigravityOAuth { .. } = &self.credential {
-            // Antigravity 支持的模型列表（与 antigravity.rs 中的 ANTIGRAVITY_MODELS 保持同步）
-            const ANTIGRAVITY_SUPPORTED_MODELS: &[&str] = &[
-                "gemini-3-pro-preview",
-                "gemini-3-pro-image-preview",
-                "gemini-3-flash-preview",
-                "gemini-2.5-flash",
-                "gemini-2.5-computer-use-preview-10-2025",
-                "gemini-claude-sonnet-4-5",
-                "gemini-claude-sonnet-4-5-thinking",
-                "gemini-claude-opus-4-5-thinking",
-            ];
-            return ANTIGRAVITY_SUPPORTED_MODELS.contains(&model);
+            return ANTIGRAVITY_MODELS_FALLBACK.contains(&model);
         }
 
         true

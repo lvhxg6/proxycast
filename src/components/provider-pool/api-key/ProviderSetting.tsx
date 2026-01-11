@@ -189,6 +189,7 @@ export const ProviderSetting: React.FC<ProviderSettingProps> = ({
         {/* API Key 列表 */}
         <section data-testid="api-key-section">
           <ApiKeyList
+            key={`${provider.id}-${provider.api_keys?.length || 0}`}
             apiKeys={provider.api_keys || []}
             providerId={provider.id}
             onAdd={onAddApiKey}
@@ -238,7 +239,10 @@ export const ProviderSetting: React.FC<ProviderSettingProps> = ({
 
         {/* 支持的模型列表 */}
         <section data-testid="supported-models-section">
-          <ProviderModelList providerType={provider.type} />
+          <ProviderModelList
+            providerId={provider.id}
+            providerType={provider.type}
+          />
         </section>
       </div>
     </div>

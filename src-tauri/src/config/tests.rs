@@ -107,50 +107,16 @@ fn arb_routing_config() -> impl Strategy<Value = RoutingConfig> {
             Just("gemini".to_string()),
             Just("qwen".to_string()),
         ],
-        proptest::collection::vec(
-            (
-                "[a-z]+-\\*|\\*-[a-z]+|[a-z]+-[a-z0-9]+".prop_map(|s| s),
-                prop_oneof![
-                    Just("kiro".to_string()),
-                    Just("gemini".to_string()),
-                    Just("qwen".to_string()),
-                ],
-                1i32..100i32,
-            ),
-            0..5,
-        ),
         proptest::collection::hash_map(
             "[a-z]+-[a-z0-9]+".prop_map(|s| s),
             "[a-z]+-[a-z0-9-]+".prop_map(|s| s),
             0..5,
         ),
-        proptest::collection::hash_map(
-            prop_oneof![
-                Just("kiro".to_string()),
-                Just("gemini".to_string()),
-                Just("qwen".to_string()),
-            ],
-            proptest::collection::vec("[a-z]+-\\*|\\*-[a-z]+".prop_map(|s| s), 0..3),
-            0..3,
-        ),
     )
-        .prop_map(
-            |(default_provider, rules, model_aliases, exclusions)| RoutingConfig {
-                default_provider,
-                rules: rules
-                    .into_iter()
-                    .map(
-                        |(pattern, provider, priority)| crate::config::types::RoutingRuleConfig {
-                            pattern,
-                            provider,
-                            priority,
-                        },
-                    )
-                    .collect(),
-                model_aliases,
-                exclusions,
-            },
-        )
+        .prop_map(|(default_provider, model_aliases)| RoutingConfig {
+            default_provider,
+            model_aliases,
+        })
 }
 
 /// 生成随机的重试配置
@@ -220,6 +186,9 @@ fn arb_config() -> impl Strategy<Value = Config> {
             endpoint_providers: crate::config::EndpointProvidersConfig::default(),
             minimize_to_tray: true,
             models: crate::config::ModelsConfig::default(),
+            agent: crate::config::NativeAgentConfig::default(),
+            language: "zh".to_string(),
+            experimental: crate::config::ExperimentalFeatures::default(),
         })
 }
 
@@ -256,19 +225,9 @@ proptest! {
             "默认 Provider 往返不一致"
         );
         prop_assert_eq!(
-            config.routing.rules.len(),
-            parsed.routing.rules.len(),
-            "路由规则数量往返不一致"
-        );
-        prop_assert_eq!(
             config.routing.model_aliases,
             parsed.routing.model_aliases,
             "模型别名往返不一致"
-        );
-        prop_assert_eq!(
-            config.routing.exclusions,
-            parsed.routing.exclusions,
-            "排除列表往返不一致"
         );
         prop_assert_eq!(
             config.retry,
@@ -385,35 +344,6 @@ proptest! {
             parsed.routing.model_aliases,
             "模型别名往返不一致"
         );
-        prop_assert_eq!(
-            routing.exclusions,
-            parsed.routing.exclusions,
-            "排除列表往返不一致"
-        );
-        prop_assert_eq!(
-            routing.rules.len(),
-            parsed.routing.rules.len(),
-            "路由规则数量往返不一致"
-        );
-
-        // 验证每个路由规则
-        for (original, parsed_rule) in routing.rules.iter().zip(parsed.routing.rules.iter()) {
-            prop_assert_eq!(
-                &original.pattern,
-                &parsed_rule.pattern,
-                "路由规则模式往返不一致"
-            );
-            prop_assert_eq!(
-                &original.provider,
-                &parsed_rule.provider,
-                "路由规则 Provider 往返不一致"
-            );
-            prop_assert_eq!(
-                original.priority,
-                parsed_rule.priority,
-                "路由规则优先级往返不一致"
-            );
-        }
     }
 }
 
@@ -494,6 +424,9 @@ fn arb_valid_config() -> impl Strategy<Value = Config> {
             endpoint_providers: crate::config::EndpointProvidersConfig::default(),
             minimize_to_tray: true,
             models: crate::config::ModelsConfig::default(),
+            agent: crate::config::NativeAgentConfig::default(),
+            language: "zh".to_string(),
+            experimental: crate::config::ExperimentalFeatures::default(),
         })
 }
 
@@ -540,6 +473,9 @@ fn arb_invalid_config() -> impl Strategy<Value = Config> {
                     endpoint_providers: crate::config::EndpointProvidersConfig::default(),
                     minimize_to_tray: true,
                     models: crate::config::ModelsConfig::default(),
+                    agent: crate::config::NativeAgentConfig::default(),
+                    language: "zh".to_string(),
+                    experimental: crate::config::ExperimentalFeatures::default(),
                 };
                 // 根据类型使配置无效
                 match invalid_type {

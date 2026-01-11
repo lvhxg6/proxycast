@@ -4,8 +4,15 @@ import react from "@vitejs/plugin-react";
 import svgr from "vite-plugin-svgr";
 import path from "path";
 
-export default defineConfig({
-  plugins: [react(), svgr()],
+export default defineConfig(({ mode }) => ({
+  plugins: [
+    react({
+      // 开发模式下启用 jsxDev 以获取组件源码位置
+      jsxRuntime: mode === "development" ? "automatic" : "automatic",
+      jsxImportSource: "react",
+    }),
+    svgr(),
+  ],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
@@ -29,4 +36,4 @@ export default defineConfig({
       "**/src-tauri/**",
     ],
   },
-});
+}));

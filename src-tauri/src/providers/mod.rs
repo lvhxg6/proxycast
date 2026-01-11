@@ -21,6 +21,8 @@ pub use traits::{CredentialProvider, ProviderResult, TokenManager};
 #[allow(unused_imports)]
 pub use antigravity::AntigravityProvider;
 #[allow(unused_imports)]
+pub use antigravity::ANTIGRAVITY_MODELS_FALLBACK;
+#[allow(unused_imports)]
 pub use claude_custom::ClaudeCustomProvider;
 #[allow(unused_imports)]
 pub use claude_oauth::ClaudeOAuthProvider;

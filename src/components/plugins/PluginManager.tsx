@@ -512,9 +512,11 @@ function PluginItem({
           <div>
             <div className="flex items-center gap-2">
               <span className="font-medium">{plugin.name}</span>
-              <span className="text-xs text-muted-foreground">
-                v{plugin.version}
-              </span>
+              {plugin.version && (
+                <Badge variant="secondary" className="text-xs">
+                  v{plugin.version}
+                </Badge>
+              )}
               <span className="flex items-center gap-1 text-xs">
                 {getStatusIcon(plugin.status)}
                 {getStatusText(plugin.status)}
@@ -646,9 +648,11 @@ function InstalledPluginItem({
         <div className="flex-1">
           <div className="flex items-center gap-2">
             <span className="font-medium">{plugin.name}</span>
-            <span className="text-xs text-muted-foreground">
-              v{plugin.version}
-            </span>
+            {plugin.version && (
+              <Badge variant="secondary" className="text-xs">
+                v{plugin.version}
+              </Badge>
+            )}
             {plugin.enabled ? (
               <span className="flex items-center gap-1 text-xs text-green-600">
                 <CheckCircle className="h-3 w-3" />

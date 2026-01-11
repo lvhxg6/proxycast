@@ -5,6 +5,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   ProxyCastPluginSDK,
   PluginId,
@@ -16,6 +17,7 @@ import type {
   StorageApi,
   CredentialApi,
   PluginConfigApi,
+  RpcApi,
   QueryResult,
   ExecuteResult,
   HttpRequestOptions,
@@ -24,6 +26,7 @@ import type {
   Unsubscribe,
   CredentialInfo,
   CredentialId,
+  RpcNotificationCallback,
 } from "./types";
 
 // ============================================================================
@@ -463,6 +466,213 @@ function createPluginConfigApi(pluginId: PluginId): PluginConfigApi {
 }
 
 // ============================================================================
+// RPC API 实现（用于 Binary 插件通信）
+// ============================================================================
+
+/**
+ * RPC 通知处理器管理
+ */
+class RpcNotificationManager {
+  private handlers = new Map<string, Set<RpcNotificationCallback>>();
+
+  on<T = unknown>(
+    event: string,
+    callback: RpcNotificationCallback<T>,
+  ): Unsubscribe {
+    if (!this.handlers.has(event)) {
+      this.handlers.set(event, new Set());
+    }
+    const eventHandlers = this.handlers.get(event)!;
+    eventHandlers.add(callback as RpcNotificationCallback);
+
+    return () => {
+      eventHandlers.delete(callback as RpcNotificationCallback);
+      if (eventHandlers.size === 0) {
+        this.handlers.delete(event);
+      }
+    };
+  }
+
+  off<T = unknown>(event: string, callback: RpcNotificationCallback<T>): void {
+    const eventHandlers = this.handlers.get(event);
+    if (eventHandlers) {
+      eventHandlers.delete(callback as RpcNotificationCallback);
+      if (eventHandlers.size === 0) {
+        this.handlers.delete(event);
+      }
+    }
+  }
+
+  emit(event: string, params: unknown): void {
+    const eventHandlers = this.handlers.get(event);
+    if (eventHandlers) {
+      eventHandlers.forEach((handler) => {
+        try {
+          handler(params);
+        } catch (error) {
+          console.error(
+            `[RPC] Error in notification handler for '${event}':`,
+            error,
+          );
+        }
+      });
+    }
+  }
+
+  clear(): void {
+    this.handlers.clear();
+  }
+}
+
+// 每个插件的 RPC 通知管理器
+const rpcNotificationManagers = new Map<PluginId, RpcNotificationManager>();
+
+function getRpcNotificationManager(pluginId: PluginId): RpcNotificationManager {
+  let manager = rpcNotificationManagers.get(pluginId);
+  if (!manager) {
+    manager = new RpcNotificationManager();
+    rpcNotificationManagers.set(pluginId, manager);
+  }
+  return manager;
+}
+
+// 连接状态跟踪
+const rpcConnectionStatus = new Map<PluginId, boolean>();
+
+// Tauri 事件监听器（全局单例）
+let _tauriEventUnlisten: UnlistenFn | null = null;
+let tauriEventInitialized = false;
+
+/**
+ * RPC 通知事件 payload 类型
+ */
+interface RpcNotificationPayload {
+  plugin_id: string;
+  method: string;
+  params: unknown;
+}
+
+/**
+ * 初始化 Tauri 事件监听器
+ * 监听来自后端的 RPC 通知并分发到对应的插件
+ */
+async function initTauriEventListener(): Promise<void> {
+  if (tauriEventInitialized) {
+    return;
+  }
+  tauriEventInitialized = true;
+
+  try {
+    _tauriEventUnlisten = await listen<RpcNotificationPayload>(
+      "plugin-rpc-notification",
+      (event) => {
+        const { plugin_id, method, params } = event.payload;
+        console.log(`[RPC] 收到通知: ${plugin_id} -> ${method}`, params);
+
+        // 分发到对应插件的通知管理器
+        const manager = rpcNotificationManagers.get(plugin_id);
+        if (manager) {
+          manager.emit(method, params);
+        } else {
+          console.warn(`[RPC] 未找到插件 ${plugin_id} 的通知管理器`);
+        }
+      },
+    );
+    console.log("[RPC] Tauri 事件监听器已初始化");
+  } catch (error) {
+    console.error("[RPC] 初始化 Tauri 事件监听器失败:", error);
+    tauriEventInitialized = false;
+  }
+}
+
+// 自动初始化事件监听器
+initTauriEventListener();
+
+/**
+ * 创建 RPC API
+ *
+ * 用于与 Binary 类型插件进行 JSON-RPC 通信
+ */
+function createRpcApi(pluginId: PluginId): RpcApi {
+  const notificationManager = getRpcNotificationManager(pluginId);
+
+  return {
+    async call<T = unknown>(method: string, params?: unknown): Promise<T> {
+      try {
+        const result = await invoke<T>("plugin_rpc_call", {
+          pluginId,
+          method,
+          params: params ?? null,
+        });
+        return result;
+      } catch (error) {
+        console.error(
+          `[Plugin ${pluginId}] RPC call error (${method}):`,
+          error,
+        );
+        throw error;
+      }
+    },
+
+    on<T = unknown>(
+      event: string,
+      callback: RpcNotificationCallback<T>,
+    ): Unsubscribe {
+      return notificationManager.on(event, callback);
+    },
+
+    off<T = unknown>(
+      event: string,
+      callback: RpcNotificationCallback<T>,
+    ): void {
+      notificationManager.off(event, callback);
+    },
+
+    isConnected(): boolean {
+      return rpcConnectionStatus.get(pluginId) ?? false;
+    },
+
+    async connect(): Promise<void> {
+      try {
+        await invoke("plugin_rpc_connect", { pluginId });
+        rpcConnectionStatus.set(pluginId, true);
+        console.log(`[Plugin ${pluginId}] RPC connected`);
+      } catch (error) {
+        console.error(`[Plugin ${pluginId}] RPC connect error:`, error);
+        throw error;
+      }
+    },
+
+    async disconnect(): Promise<void> {
+      try {
+        await invoke("plugin_rpc_disconnect", { pluginId });
+        rpcConnectionStatus.set(pluginId, false);
+        notificationManager.clear();
+        console.log(`[Plugin ${pluginId}] RPC disconnected`);
+      } catch (error) {
+        console.error(`[Plugin ${pluginId}] RPC disconnect error:`, error);
+        throw error;
+      }
+    },
+  };
+}
+
+/**
+ * 处理来自后端的 RPC 通知
+ * 由 Tauri 事件系统调用
+ */
+export function handleRpcNotification(
+  pluginId: PluginId,
+  event: string,
+  params: unknown,
+): void {
+  const manager = rpcNotificationManagers.get(pluginId);
+  if (manager) {
+    manager.emit(event, params);
+  }
+}
+
+// ============================================================================
 // SDK 工厂函数
 // ============================================================================
 
@@ -498,6 +708,7 @@ export function createPluginSDK(pluginId: PluginId): ProxyCastPluginSDK {
     storage: createStorageApi(pluginId),
     credential: createCredentialApi(pluginId),
     config: createPluginConfigApi(pluginId),
+    rpc: createRpcApi(pluginId),
   };
 }
 

@@ -46,6 +46,8 @@ function getTestModel(provider: string): string {
       return "gpt-4o";
     case "claude":
       return "claude-sonnet-4-20250514";
+    case "deepseek":
+      return "deepseek-chat";
     case "kiro":
     default:
       return "claude-opus-4-5-20251101";

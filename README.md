@@ -126,11 +126,26 @@
 
 ### 下载安装
 
+#### macOS (推荐使用 Homebrew)
+
+```bash
+brew tap aiclientproxy/tap
+brew install --cask proxycast
+```
+
+更新版本：
+```bash
+brew upgrade --cask proxycast
+```
+
+#### 手动下载
+
 从 [Releases](https://github.com/aiclientproxy/proxycast/releases) 页面下载对应平台的安装包：
 
-- **macOS (Apple Silicon)**: `ProxyCast_x.x.x_aarch64.dmg`
-- **Windows (x64)**: `ProxyCast_x.x.x_x64-setup.exe`
-- **Ubuntu/Debian (x64)**: `ProxyCast_x.x.x_amd64.deb`
+- **macOS (Apple Silicon)**: `proxycast_x.x.x_aarch64.dmg`
+- **macOS (Intel)**: `proxycast_x.x.x_x64.dmg`
+- **Windows (x64)**: `proxycast_x.x.x_x64-setup.exe`
+- **Ubuntu/Debian (x64)**: `proxycast_x.x.x_amd64.deb`
 
 ### 使用步骤
 

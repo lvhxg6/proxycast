@@ -1,26 +1,96 @@
+/*
+ * @Author: Chiron 598621670@qq.com
+ * @Date: 2026-01-06 17:34:03
+ * @LastEditors: Chiron 598621670@qq.com
+ * @LastEditTime: 2026-01-07 00:53:05
+ * @FilePath: /proxycast/src/components/provider-pool/api-key/providerTypeMapping.ts
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 /**
  * @file Provider 类型映射工具
- * @description Provider 类型到 model_registry provider_id 的映射
+ * @description Provider ID/类型到 model_registry provider_id 的映射
  * @module components/provider-pool/api-key/providerTypeMapping
  */
 
 /**
- * Provider 类型到 model_registry provider_id 的映射
+ * Provider ID 到 model_registry provider_id 的映射
+ * 用于将系统 Provider ID（如 deepseek, moonshot）映射到模型注册表中的 provider_id
+ */
+const PROVIDER_ID_TO_REGISTRY_ID: Record<string, string> = {
+  // 主流 AI
+  openai: "openai",
+  anthropic: "anthropic",
+  gemini: "google",
+  deepseek: "deepseek",
+  moonshot: "moonshot",
+  groq: "groq",
+  grok: "grok",
+  mistral: "mistral",
+  perplexity: "perplexity",
+  cohere: "cohere",
+  // 国内 AI
+  zhipu: "zhipu",
+  baichuan: "baichuan",
+  dashscope: "dashscope",
+  doubao: "doubao",
+  minimax: "minimax",
+  stepfun: "stepfun",
+  lingyi: "lingyi",
+  baidu: "baidu",
+  hunyuan: "hunyuan",
+  spark: "spark",
+  // 云服务
+  "azure-openai": "openai",
+  vertexai: "google",
+  "aws-bedrock": "anthropic",
+  // 代理服务
+  iflow: "deepseek", // iFlow 是 DeepSeek 的代理
+  // 其他
+  ollama: "ollama",
+  together: "together",
+  fireworks: "fireworks",
+  replicate: "replicate",
+};
+
+/**
+ * Provider 类型（API 协议）到 model_registry provider_id 的映射
+ * 作为 Provider ID 映射的回退
  */
 const PROVIDER_TYPE_TO_REGISTRY_ID: Record<string, string> = {
   anthropic: "anthropic",
   openai: "openai",
   "openai-response": "openai",
   gemini: "google",
-  "azure-openai": "openai",
-  vertexai: "google",
-  "aws-bedrock": "anthropic",
-  ollama: "ollama",
-  "new-api": "custom",
-  gateway: "custom",
 };
 
 /**
+ * 将 Provider ID 转换为 model_registry 的 provider_id
+ * 优先使用 Provider ID 映射，回退到 Provider Type 映射
+ *
+ * @param providerId Provider ID（如 "deepseek", "openai"）
+ * @param providerType Provider 类型/API 协议（如 "openai", "anthropic"）
+ * @returns model_registry 中的 provider_id
+ */
+export function mapProviderIdToRegistryId(
+  providerId: string,
+  providerType?: string,
+): string {
+  // 优先使用 Provider ID 映射
+  if (PROVIDER_ID_TO_REGISTRY_ID[providerId]) {
+    return PROVIDER_ID_TO_REGISTRY_ID[providerId];
+  }
+
+  // 回退到 Provider Type 映射
+  if (providerType && PROVIDER_TYPE_TO_REGISTRY_ID[providerType]) {
+    return PROVIDER_TYPE_TO_REGISTRY_ID[providerType];
+  }
+
+  // 最后回退到原始 providerId
+  return providerId;
+}
+
+/**
+ * @deprecated 使用 mapProviderIdToRegistryId 代替
  * 将 Provider 类型转换为 model_registry 的 provider_id
  */
 export function mapProviderTypeToRegistryId(providerType: string): string {

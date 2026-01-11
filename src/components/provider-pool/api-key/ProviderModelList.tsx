@@ -9,14 +9,16 @@ import { cn } from "@/lib/utils";
 import { useModelRegistry } from "@/hooks/useModelRegistry";
 import { Eye, Wrench, Brain, Sparkles, Loader2 } from "lucide-react";
 import type { EnhancedModelMetadata } from "@/lib/types/modelRegistry";
-import { mapProviderTypeToRegistryId } from "./providerTypeMapping";
+import { mapProviderIdToRegistryId } from "./providerTypeMapping";
 
 // ============================================================================
 // 类型定义
 // ============================================================================
 
 export interface ProviderModelListProps {
-  /** Provider 类型，如 "anthropic", "openai", "gemini" */
+  /** Provider ID，如 "deepseek", "openai", "anthropic" */
+  providerId: string;
+  /** Provider 类型（API 协议），如 "anthropic", "openai", "gemini" */
   providerType: string;
   /** 额外的 CSS 类名 */
   className?: string;
@@ -46,11 +48,6 @@ const ModelItem: React.FC<ModelItemProps> = ({ model }) => {
           <span className="text-sm font-medium truncate">
             {model.display_name}
           </span>
-          {model.is_latest && (
-            <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded">
-              最新
-            </span>
-          )}
         </div>
         <div className="text-xs text-muted-foreground truncate">{model.id}</div>
       </div>
@@ -104,14 +101,15 @@ const ModelItem: React.FC<ModelItemProps> = ({ model }) => {
  * ```
  */
 export const ProviderModelList: React.FC<ProviderModelListProps> = ({
+  providerId,
   providerType,
   className,
   maxItems,
 }) => {
-  // 转换 Provider 类型为 registry ID
+  // 转换 Provider ID 为 registry ID（优先使用 providerId，回退到 providerType）
   const registryProviderId = useMemo(
-    () => mapProviderTypeToRegistryId(providerType),
-    [providerType],
+    () => mapProviderIdToRegistryId(providerId, providerType),
+    [providerId, providerType],
   );
 
   // 获取模型数据

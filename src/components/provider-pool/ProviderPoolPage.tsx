@@ -13,6 +13,7 @@ import {
   forwardRef,
   useImperativeHandle,
   useCallback,
+  useRef,
 } from "react";
 import {
   RefreshCw,
@@ -34,7 +35,8 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { getConfig } from "@/hooks/useTauri";
 import { ProviderIcon } from "@/icons/providers";
 import { ApiKeyProviderSection, AddCustomProviderModal } from "./api-key";
-import { OAuthPluginTab } from "./OAuthPluginTab";
+import type { ApiKeyProviderSectionRef } from "./api-key";
+// import { OAuthPluginTab } from "./OAuthPluginTab"; // 暂时禁用
 import { RelayProvidersSection } from "./RelayProvidersSection";
 import { ModelRegistryTab } from "./ModelRegistryTab";
 import type { AddCustomProviderRequest } from "@/lib/api/apiKeyProvider";
@@ -105,6 +107,9 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
     const [addCustomProviderModalOpen, setAddCustomProviderModalOpen] =
       useState(false);
 
+    // ApiKeyProviderSection 的 ref
+    const apiKeyProviderSectionRef = useRef<ApiKeyProviderSectionRef>(null);
+
     const {
       overview,
       loading,
@@ -124,8 +129,11 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
     } = useProviderPool();
 
     // API Key Provider Hook
-    const { addCustomProvider, refresh: refreshApiKeyProviders } =
-      useApiKeyProvider();
+    const {
+      addCustomProvider,
+      addApiKey,
+      refresh: refreshApiKeyProviders,
+    } = useApiKeyProvider();
 
     const [migrating, setMigrating] = useState(false);
 
@@ -313,9 +321,20 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
     // 添加自定义 Provider 处理
     const handleAddCustomProvider = useCallback(
       async (request: AddCustomProviderRequest) => {
-        await addCustomProvider(request);
+        const result = await addCustomProvider(request);
+        return result; // 返回包含 id 的结果
       },
       [addCustomProvider],
+    );
+
+    // 添加 API Key 处理
+    const handleAddApiKey = useCallback(
+      async (providerId: string, apiKey: string) => {
+        await addApiKey(providerId, apiKey);
+        // 刷新 ApiKeyProviderSection 的数据
+        await apiKeyProviderSectionRef.current?.refresh();
+      },
+      [addApiKey],
     );
 
     // Current tab data (仅用于 OAuth 凭证 tab)
@@ -386,16 +405,17 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
           </button>
           <button
             onClick={() => {
-              setActiveCategory("plugins");
+              // setActiveCategory("plugins"); // 暂时禁用
             }}
-            className={`px-4 py-2 text-sm font-medium rounded-lg border transition-colors ${
-              activeCategory === "plugins"
-                ? "border-primary bg-primary/10 text-primary"
-                : "border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted"
-            }`}
+            disabled
+            className={`relative px-4 py-2 text-sm font-medium rounded-lg border transition-colors opacity-50 cursor-not-allowed border-border bg-card text-muted-foreground`}
             data-testid="plugins-category-tab"
+            title="功能开发中"
           >
             OAuth 插件
+            <span className="absolute -top-1.5 -right-1.5 px-1 py-0.5 text-[10px] font-medium bg-gray-400 text-white rounded">
+              开发中
+            </span>
           </button>
           <button
             onClick={() => {
@@ -480,17 +500,18 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
             data-testid="apikey-section"
           >
             <ApiKeyProviderSection
+              ref={apiKeyProviderSectionRef}
               onAddCustomProvider={() => setAddCustomProviderModalOpen(true)}
             />
           </div>
         )}
 
-        {/* OAuth 插件分类 */}
-        {activeCategory === "plugins" && (
+        {/* OAuth 插件分类已隐藏 */}
+        {/* {activeCategory === "plugins" && (
           <div className="min-h-[400px]" data-testid="plugins-section">
             <OAuthPluginTab />
           </div>
-        )}
+        )} */}
 
         {/* 模型库分类 */}
         {activeCategory === "models" && <ModelRegistryTab />}
@@ -681,6 +702,7 @@ export const ProviderPoolPage = forwardRef<ProviderPoolPageRef>(
           isOpen={addCustomProviderModalOpen}
           onClose={() => setAddCustomProviderModalOpen(false)}
           onAdd={handleAddCustomProvider}
+          onAddApiKey={handleAddApiKey}
         />
 
         {/* Edit Credential Modal */}

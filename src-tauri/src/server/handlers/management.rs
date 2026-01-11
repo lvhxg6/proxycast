@@ -517,9 +517,6 @@ pub async fn management_add_credential(
 pub async fn management_get_config(State(state): State<AppState>) -> impl IntoResponse {
     let default_provider = state.default_provider.read().await.clone();
 
-    // 获取路由规则数量
-    let rules_count = state.processor.router.read().await.rules().len();
-
     let response = ManagementConfigResponse {
         server: ManagementServerConfigInfo {
             host: "0.0.0.0".to_string(),
@@ -528,7 +525,7 @@ pub async fn management_get_config(State(state): State<AppState>) -> impl IntoRe
         },
         routing: ManagementRoutingConfigInfo {
             default_provider,
-            rules_count,
+            rules_count: 0, // 路由规则已移除
         },
         retry: ManagementRetryConfigInfo {
             max_retries: 3,

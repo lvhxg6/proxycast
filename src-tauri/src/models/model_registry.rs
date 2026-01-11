@@ -159,7 +159,9 @@ impl std::str::FromStr for ModelTier {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelSource {
-    /// 从 models.dev API 获取
+    /// 从内嵌资源加载（构建时打包）
+    Embedded,
+    /// 从 models.dev API 获取（已弃用）
     ModelsDev,
     /// 本地硬编码（国内模型等）
     Local,
@@ -176,6 +178,7 @@ impl Default for ModelSource {
 impl std::fmt::Display for ModelSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Embedded => write!(f, "embedded"),
             Self::ModelsDev => write!(f, "models.dev"),
             Self::Local => write!(f, "local"),
             Self::Custom => write!(f, "custom"),
@@ -188,6 +191,7 @@ impl std::str::FromStr for ModelSource {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
+            "embedded" => Ok(Self::Embedded),
             "models.dev" | "modelsdev" => Ok(Self::ModelsDev),
             "local" => Ok(Self::Local),
             "custom" => Ok(Self::Custom),
@@ -385,6 +389,58 @@ impl Default for ModelSyncState {
     }
 }
 
+// ============================================================================
+// Provider Alias 相关类型（用于 Kiro、Antigravity 等中转服务）
+// ============================================================================
+
+/// 单个模型别名映射
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelAlias {
+    /// 实际模型 ID（如 "claude-sonnet-4-5-20250929"）
+    pub actual: String,
+    /// 内部 API 名称（如 "CLAUDE_SONNET_4_5_20250929_V1_0"）
+    pub internal_name: Option<String>,
+    /// 原始 Provider（如 "anthropic"）
+    pub provider: Option<String>,
+    /// 描述
+    pub description: Option<String>,
+}
+
+/// Provider 的别名配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderAliasConfig {
+    /// Provider ID（如 "kiro"、"antigravity"）
+    pub provider: String,
+    /// 描述
+    pub description: Option<String>,
+    /// 支持的模型列表
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// 别名映射（模型名 -> 别名配置）
+    pub aliases: std::collections::HashMap<String, ModelAlias>,
+    /// 更新时间
+    pub updated_at: Option<String>,
+}
+
+impl ProviderAliasConfig {
+    /// 检查是否支持指定模型
+    pub fn supports_model(&self, model: &str) -> bool {
+        self.models.contains(&model.to_string()) || self.aliases.contains_key(model)
+    }
+
+    /// 获取模型的内部名称
+    pub fn get_internal_name(&self, model: &str) -> Option<&str> {
+        self.aliases
+            .get(model)
+            .and_then(|a| a.internal_name.as_deref())
+    }
+
+    /// 获取模型的实际 ID
+    pub fn get_actual_model(&self, model: &str) -> Option<&str> {
+        self.aliases.get(model).map(|a| a.actual.as_str())
+    }
+}
+
 /// models.dev API 响应中的 Provider 结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelsDevProvider {
@@ -460,6 +516,8 @@ pub struct ModelsDevModalities {
 
 impl ModelsDevModel {
     /// 转换为 EnhancedModelMetadata
+    /// 预留：用于从 models.dev API 导入模型数据
+    #[allow(dead_code)]
     pub fn to_enhanced_metadata(
         &self,
         provider_id: &str,
@@ -528,6 +586,8 @@ impl ModelsDevModel {
 }
 
 /// 根据模型 ID 和名称推断服务等级
+/// 用于 to_enhanced_metadata 和测试
+#[allow(dead_code)]
 fn infer_model_tier(model_id: &str, model_name: &str) -> ModelTier {
     let id_lower = model_id.to_lowercase();
     let name_lower = model_name.to_lowercase();

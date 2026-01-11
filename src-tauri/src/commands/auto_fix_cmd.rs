@@ -209,7 +209,7 @@ async fn set_default_provider_internal(
     provider: String,
 ) -> Result<(), String> {
     // 验证provider
-    let _provider_type: ProviderType = provider.parse().map_err(|e: String| e)?;
+    let provider_type: ProviderType = provider.parse().map_err(|e: String| e)?;
 
     let mut s = state.write().await;
     s.config.default_provider = provider.clone();
@@ -218,6 +218,13 @@ async fn set_default_provider_internal(
     {
         let mut dp = s.default_provider_ref.write().await;
         *dp = provider.clone();
+    }
+
+    // 同时更新运行中服务器的 router（如果服务器正在运行）
+    if let Some(router_ref) = &s.router_ref {
+        let mut router = router_ref.write().await;
+        router.set_default_provider(provider_type);
+        tracing::info!("[AUTO_FIX] 动态更新 Router 默认 Provider: {}", provider);
     }
 
     config::save_config(&s.config).map_err(|e| e.to_string())?;

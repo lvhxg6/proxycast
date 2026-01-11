@@ -3,8 +3,8 @@
 pub mod client_detector;
 
 use crate::config::{
-    Config, ConfigChangeEvent, ConfigChangeKind, ConfigManager, EndpointProvidersConfig,
-    FileWatcher, HotReloadManager, ReloadResult,
+    Config, ConfigChangeKind, ConfigManager, EndpointProvidersConfig, FileChangeEvent, FileWatcher,
+    HotReloadManager, ReloadResult,
 };
 use crate::converter::anthropic_to_openai::convert_anthropic_to_openai;
 use crate::credential::CredentialSyncService;
@@ -165,6 +165,8 @@ pub struct ServerState {
     pub openai_custom_provider: OpenAICustomProvider,
     pub claude_custom_provider: ClaudeCustomProvider,
     pub default_provider_ref: Arc<RwLock<String>>,
+    /// 路由器引用（用于动态更新默认 Provider）
+    pub router_ref: Option<Arc<RwLock<crate::router::Router>>>,
     shutdown_tx: Option<oneshot::Sender<()>>,
     /// 服务器运行时使用的 API key（启动时从配置复制）
     /// 用于 test_api 命令，确保测试使用的 API key 和服务器一致
@@ -191,6 +193,7 @@ impl ServerState {
             openai_custom_provider: openai_custom,
             claude_custom_provider: claude_custom,
             default_provider_ref,
+            router_ref: None,
             shutdown_tx: None,
             running_api_key: None,
         }
@@ -299,6 +302,50 @@ impl ServerState {
         let config = self.config.clone();
         let config_path = crate::config::ConfigManager::default_config_path();
 
+        // 创建请求处理器（在 spawn 之前创建，以便保存 router_ref）
+        let processor = match (&shared_stats, &shared_tokens) {
+            (Some(stats), Some(tokens)) => Arc::new(RequestProcessor::with_shared_telemetry(
+                pool_service.clone(),
+                stats.clone(),
+                tokens.clone(),
+            )),
+            _ => Arc::new(RequestProcessor::with_defaults(pool_service.clone())),
+        };
+
+        // 从配置初始化 Router 的默认 Provider
+        {
+            let default_provider_str = &config.routing.default_provider;
+
+            // 尝试解析为 ProviderType 枚举
+            match default_provider_str.parse::<crate::ProviderType>() {
+                Ok(provider_type) => {
+                    let mut router = processor.router.write().await;
+                    router.set_default_provider(provider_type);
+                    tracing::info!(
+                        "[SERVER] 从配置初始化 Router 默认 Provider: {} (ProviderType)",
+                        default_provider_str
+                    );
+                }
+                Err(_) => {
+                    // 如果解析失败，可能是自定义 provider ID
+                    // 这种情况下，路由器保持空状态，请求会直接使用 provider_id 进行凭证查找
+                    tracing::warn!(
+                        "[SERVER] 配置的默认 Provider '{}' 不是有效的 ProviderType 枚举值，可能是自定义 Provider ID。\
+                        路由器将保持空状态，请求将直接使用 provider_id 进行凭证查找。",
+                        default_provider_str
+                    );
+                    eprintln!(
+                        "[SERVER] 警告：默认 Provider '{}' 不是标准 Provider 类型（kiro/openai/claude等），\
+                        可能是自定义 Provider ID。如果这是预期行为，请忽略此警告。",
+                        default_provider_str
+                    );
+                }
+            }
+        }
+
+        // 保存 router_ref 以便后续动态更新
+        self.router_ref = Some(processor.router.clone());
+
         tokio::spawn(async move {
             if let Err(e) = run_server(
                 &host,
@@ -320,6 +367,7 @@ impl ServerState {
                 shared_flow_interceptor,
                 Some(config),
                 Some(config_path),
+                Some(processor),
             )
             .await
             {
@@ -341,6 +389,7 @@ impl ServerState {
         self.running = false;
         self.start_time = None;
         self.running_api_key = None;
+        self.router_ref = None;
     }
 }
 
@@ -417,7 +466,7 @@ async fn start_config_watcher(
     db: Option<DbConnection>,
     config_manager: Option<Arc<std::sync::RwLock<ConfigManager>>>,
 ) -> Option<FileWatcher> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConfigChangeEvent>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<FileChangeEvent>();
 
     // 创建文件监控器
     let mut watcher = match FileWatcher::new(&config_path, tx) {
@@ -558,46 +607,32 @@ async fn update_processor_config(processor: &RequestProcessor, config: &Config) 
         );
     }
 
-    // 更新路由器规则
+    // 更新路由器默认 Provider
     {
         let mut router = processor.router.write().await;
-        router.clear_rules();
 
-        // 如果配置文件中有路由规则，使用配置文件的规则
-        // 否则使用默认规则
-        if !config.routing.rules.is_empty() {
-            for rule in &config.routing.rules {
-                // 解析 provider 字符串为 ProviderType
-                if let Ok(provider_type) = rule.provider.parse::<crate::ProviderType>() {
-                    router.add_rule(crate::router::RoutingRule {
-                        pattern: rule.pattern.clone(),
-                        target_provider: provider_type,
-                        priority: rule.priority,
-                        enabled: true,
-                    });
-                } else {
-                    tracing::warn!("[HOT_RELOAD] 无法解析 provider: {}", rule.provider);
-                }
+        // 尝试解析为 ProviderType 枚举
+        match config
+            .routing
+            .default_provider
+            .parse::<crate::ProviderType>()
+        {
+            Ok(provider_type) => {
+                router.set_default_provider(provider_type);
+                tracing::debug!(
+                    "[HOT_RELOAD] 路由器默认 Provider 已更新: {} (ProviderType)",
+                    config.routing.default_provider
+                );
             }
-            tracing::debug!(
-                "[HOT_RELOAD] 路由规则已更新: {} 条规则（来自配置文件）",
-                config.routing.rules.len()
-            );
-        } else {
-            // 使用默认路由规则
-            router.add_rule(crate::router::RoutingRule::new(
-                "gemini-*",
-                crate::ProviderType::Antigravity,
-                10,
-            ));
-            router.add_rule(crate::router::RoutingRule::new(
-                "claude-*",
-                crate::ProviderType::Kiro,
-                10,
-            ));
-            tracing::debug!(
-                "[HOT_RELOAD] 路由规则已更新: 使用默认规则 (gemini-* → Antigravity, claude-* → Kiro)"
-            );
+            Err(_) => {
+                // 如果解析失败，可能是自定义 provider ID
+                // 清空路由器的默认 provider，让请求直接使用 provider_id
+                tracing::warn!(
+                    "[HOT_RELOAD] 配置的默认 Provider '{}' 不是有效的 ProviderType 枚举值，可能是自定义 Provider ID。\
+                    路由器默认 Provider 将被清空。",
+                    config.routing.default_provider
+                );
+            }
         }
     }
 
@@ -697,17 +732,21 @@ async fn run_server(
     shared_flow_interceptor: Option<Arc<FlowInterceptor>>,
     config: Option<Config>,
     config_path: Option<PathBuf>,
+    processor: Option<Arc<RequestProcessor>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let base_url = format!("http://{}:{}", host, port);
 
-    // 创建请求处理器（使用共享的遥测实例或默认实例）
-    let processor = match (shared_stats, shared_tokens) {
-        (Some(stats), Some(tokens)) => Arc::new(RequestProcessor::with_shared_telemetry(
-            pool_service.clone(),
-            stats,
-            tokens,
-        )),
-        _ => Arc::new(RequestProcessor::with_defaults(pool_service.clone())),
+    // 使用传入的 processor 或创建新的
+    let processor = match processor {
+        Some(p) => p,
+        None => match (&shared_stats, &shared_tokens) {
+            (Some(stats), Some(tokens)) => Arc::new(RequestProcessor::with_shared_telemetry(
+                pool_service.clone(),
+                stats.clone(),
+                tokens.clone(),
+            )),
+            _ => Arc::new(RequestProcessor::with_defaults(pool_service.clone())),
+        },
     };
 
     // 将注入器规则同步到处理器
@@ -715,6 +754,35 @@ async fn run_server(
         let mut proc_injector = processor.injector.write().await;
         for rule in injector.rules() {
             proc_injector.add_rule(rule.clone());
+        }
+    }
+
+    // 从配置初始化 Router 的默认 Provider
+    if let Some(cfg) = &config {
+        let default_provider_str = &cfg.routing.default_provider;
+
+        // 尝试解析为 ProviderType 枚举
+        match default_provider_str.parse::<crate::ProviderType>() {
+            Ok(provider_type) => {
+                let mut router = processor.router.write().await;
+                router.set_default_provider(provider_type);
+                tracing::info!(
+                    "[SERVER] 从配置初始化 Router 默认 Provider: {} (ProviderType)",
+                    default_provider_str
+                );
+            }
+            Err(_) => {
+                // 如果解析失败，可能是自定义 provider ID
+                tracing::warn!(
+                    "[SERVER] 配置的默认 Provider '{}' 不是有效的 ProviderType 枚举值，可能是自定义 Provider ID。\
+                    路由器将保持空状态，请求将直接使用 provider_id 进行凭证查找。",
+                    default_provider_str
+                );
+                eprintln!(
+                    "[SERVER] 警告：默认 Provider '{}' 不是标准 Provider 类型，可能是自定义 Provider ID",
+                    default_provider_str
+                );
+            }
         }
     }
 
@@ -1008,17 +1076,11 @@ async fn gemini_generate_content(
     // 获取默认 provider
     let default_provider = state.default_provider.read().await.clone();
 
-    // 尝试从凭证池中选择凭证（带智能降级）
+    // 尝试从凭证池中选择凭证（不降级，指定什么就用什么）
     let credential = match &state.db {
         Some(db) => state
             .pool_service
-            .select_credential_with_fallback(
-                db,
-                &state.api_key_service,
-                &default_provider,
-                Some(model),
-                None, // provider_id_hint
-            )
+            .select_credential(db, &default_provider, Some(model))
             .ok()
             .flatten(),
         None => None,
@@ -1028,10 +1090,10 @@ async fn gemini_generate_content(
         Some(c) => c,
         None => {
             return (
-                StatusCode::NOT_FOUND,
+                StatusCode::SERVICE_UNAVAILABLE,
                 Json(serde_json::json!({
                     "error": {
-                        "message": "没有可用的凭证。您可以在 API Key Provider 中配置 API Key 作为降级选项。"
+                        "message": format!("No available credentials for provider '{}'. Please add credentials in the Provider Pool.", default_provider)
                     }
                 })),
             )
@@ -1290,7 +1352,7 @@ async fn anthropic_messages_with_selector(
         ),
     );
 
-    // 尝试解析凭证（带智能降级）
+    // 尝试解析凭证（不降级，指定什么就用什么）
     let credential = match &state.db {
         Some(db) => {
             // 首先尝试按名称查找
@@ -1301,14 +1363,12 @@ async fn anthropic_messages_with_selector(
             else if let Ok(Some(cred)) = state.pool_service.get_by_uuid(db, &selector) {
                 Some(cred)
             }
-            // 最后尝试按 provider 类型轮询（带智能降级）
-            else if let Ok(Some(cred)) = state.pool_service.select_credential_with_fallback(
-                db,
-                &state.api_key_service,
-                &selector,
-                Some(&request.model),
-                None, // provider_id_hint
-            ) {
+            // 最后尝试按 provider 类型选择（不降级）
+            else if let Ok(Some(cred)) =
+                state
+                    .pool_service
+                    .select_credential(db, &selector, Some(&request.model))
+            {
                 Some(cred)
             } else {
                 None
@@ -1334,16 +1394,24 @@ async fn anthropic_messages_with_selector(
             handlers::call_provider_anthropic(&state, &cred, &request, None).await
         }
         None => {
-            // 回退到默认 Kiro provider
+            // 不再回退到默认 provider，直接返回错误
             state.logs.write().await.add(
-                "warn",
+                "error",
                 &format!(
-                    "[ROUTE] Credential not found for selector '{}', falling back to default",
+                    "[ROUTE] No available credentials for selector '{}', refusing to fallback",
                     selector
                 ),
             );
-            // 调用原有的 Kiro 处理逻辑
-            anthropic_messages_internal(&state, &request).await
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": {
+                        "type": "provider_unavailable",
+                        "message": format!("No available credentials for selector '{}'", selector)
+                    }
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -1371,20 +1439,18 @@ async fn chat_completions_with_selector(
         ),
     );
 
-    // 尝试解析凭证（带智能降级）
+    // 尝试解析凭证（不降级，指定什么就用什么）
     let credential = match &state.db {
         Some(db) => {
             if let Ok(Some(cred)) = state.pool_service.get_by_name(db, &selector) {
                 Some(cred)
             } else if let Ok(Some(cred)) = state.pool_service.get_by_uuid(db, &selector) {
                 Some(cred)
-            } else if let Ok(Some(cred)) = state.pool_service.select_credential_with_fallback(
-                db,
-                &state.api_key_service,
-                &selector,
-                Some(&request.model),
-                None, // provider_id_hint
-            ) {
+            } else if let Ok(Some(cred)) =
+                state
+                    .pool_service
+                    .select_credential(db, &selector, Some(&request.model))
+            {
                 Some(cred)
             } else {
                 None
@@ -1409,14 +1475,25 @@ async fn chat_completions_with_selector(
             handlers::call_provider_openai(&state, &cred, &request, None).await
         }
         None => {
+            // 不再回退到默认 provider，直接返回错误
             state.logs.write().await.add(
-                "warn",
+                "error",
                 &format!(
-                    "[ROUTE] Credential not found for selector '{}', falling back to default",
+                    "[ROUTE] No available credentials for selector '{}', refusing to fallback",
                     selector
                 ),
             );
-            chat_completions_internal(&state, &request).await
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("No available credentials for selector '{}'", selector),
+                        "type": "provider_unavailable",
+                        "code": "no_credentials"
+                    }
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -1466,31 +1543,77 @@ async fn amp_chat_completions(
         ),
     );
 
-    // 尝试根据 provider 名称选择凭证（带智能降级）
+    // 尝试根据 provider 名称选择凭证
+    eprintln!(
+        "[AMP] 开始查找凭证: provider={}, model={}, db={}",
+        provider,
+        request.model,
+        state.db.is_some()
+    );
     let credential = match &state.db {
         Some(db) => {
-            // 首先尝试按 provider 类型选择（带智能降级）
-            if let Ok(Some(cred)) = state.pool_service.select_credential_with_fallback(
-                db,
-                &state.api_key_service,
-                &provider,
-                Some(&request.model),
-                Some(&provider), // provider_id_hint 使用路由中的 provider 名称
-            ) {
+            eprintln!(
+                "[AMP] 使用 select_credential 查找凭证（Provider Pool）: provider={}",
+                provider
+            );
+            // 先尝试从 Provider Pool 查找
+            let pool_cred = if let Ok(Some(cred)) =
+                state
+                    .pool_service
+                    .select_credential(db, &provider, Some(&request.model))
+            {
+                eprintln!("[AMP] select_credential 找到凭证: {:?}", cred.name);
                 Some(cred)
             }
             // 然后尝试按名称查找
             else if let Ok(Some(cred)) = state.pool_service.get_by_name(db, &provider) {
+                eprintln!("[AMP] get_by_name 找到凭证: {:?}", cred.name);
                 Some(cred)
             }
             // 最后尝试按 UUID 查找
             else if let Ok(Some(cred)) = state.pool_service.get_by_uuid(db, &provider) {
+                eprintln!("[AMP] get_by_uuid 找到凭证: {:?}", cred.name);
                 Some(cred)
             } else {
                 None
+            };
+
+            // 如果 Provider Pool 中没有找到，尝试从 API Key Provider 查找
+            if pool_cred.is_none() {
+                eprintln!(
+                    "[AMP] Provider Pool 中未找到凭证，尝试 API Key Provider: provider={}",
+                    provider
+                );
+
+                match state.api_key_service.get_fallback_credential(
+                    db,
+                    &crate::models::provider_pool_model::PoolProviderType::OpenAI,
+                    Some(&provider),
+                ) {
+                    Ok(Some(cred)) => {
+                        eprintln!(
+                            "[AMP] 通过 provider_id '{}' 找到 API Key Provider 凭证: name={:?}",
+                            provider, cred.name
+                        );
+                        Some(cred)
+                    }
+                    Ok(None) => {
+                        eprintln!("[AMP] 未找到任何凭证 for provider '{}'", provider);
+                        None
+                    }
+                    Err(e) => {
+                        eprintln!("[AMP] 查找 API Key Provider 凭证时出错: {}", e);
+                        None
+                    }
+                }
+            } else {
+                pool_cred
             }
         }
-        None => None,
+        None => {
+            eprintln!("[AMP] 数据库未初始化");
+            None
+        }
     };
 
     match credential {
@@ -1508,14 +1631,25 @@ async fn amp_chat_completions(
             handlers::call_provider_openai(&state, &cred, &request, None).await
         }
         None => {
+            // 不再回退到默认 provider，直接返回错误
             state.logs.write().await.add(
-                "warn",
+                "error",
                 &format!(
-                    "[AMP] Credential not found for provider '{}', falling back to default",
+                    "[AMP] No available credentials for provider '{}', refusing to fallback",
                     provider
                 ),
             );
-            chat_completions_internal(&state, &request).await
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": {
+                        "message": format!("No available credentials for provider '{}'", provider),
+                        "type": "provider_unavailable",
+                        "code": "no_credentials"
+                    }
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -1564,17 +1698,15 @@ async fn amp_messages(
         ),
     );
 
-    // 尝试根据 provider 名称选择凭证（带智能降级）
+    // 尝试根据 provider 名称选择凭证
     let credential = match &state.db {
         Some(db) => {
-            // 首先尝试按 provider 类型选择（带智能降级）
-            if let Ok(Some(cred)) = state.pool_service.select_credential_with_fallback(
-                db,
-                &state.api_key_service,
-                &provider,
-                Some(&request.model),
-                Some(&provider), // provider_id_hint 使用路由中的 provider 名称
-            ) {
+            // 先尝试从 Provider Pool 查找
+            let pool_cred = if let Ok(Some(cred)) =
+                state
+                    .pool_service
+                    .select_credential(db, &provider, Some(&request.model))
+            {
                 Some(cred)
             }
             // 然后尝试按名称查找
@@ -1586,6 +1718,38 @@ async fn amp_messages(
                 Some(cred)
             } else {
                 None
+            };
+
+            // 如果 Provider Pool 中没有找到，尝试从 API Key Provider 查找
+            if pool_cred.is_none() {
+                eprintln!(
+                    "[AMP_MESSAGES] Provider Pool 中未找到凭证，尝试 API Key Provider: provider={}",
+                    provider
+                );
+
+                match state.api_key_service.get_fallback_credential(
+                    db,
+                    &crate::models::provider_pool_model::PoolProviderType::Anthropic,
+                    Some(&provider),
+                ) {
+                    Ok(Some(cred)) => {
+                        eprintln!(
+                            "[AMP_MESSAGES] 通过 provider_id '{}' 找到 API Key Provider 凭证: name={:?}",
+                            provider, cred.name
+                        );
+                        Some(cred)
+                    }
+                    Ok(None) => {
+                        eprintln!("[AMP_MESSAGES] 未找到任何凭证 for provider '{}'", provider);
+                        None
+                    }
+                    Err(e) => {
+                        eprintln!("[AMP_MESSAGES] 查找 API Key Provider 凭证时出错: {}", e);
+                        None
+                    }
+                }
+            } else {
+                pool_cred
             }
         }
         None => None,
@@ -1606,14 +1770,24 @@ async fn amp_messages(
             handlers::call_provider_anthropic(&state, &cred, &request, None).await
         }
         None => {
+            // 不再回退到默认 provider，直接返回错误
             state.logs.write().await.add(
-                "warn",
+                "error",
                 &format!(
-                    "[AMP] Credential not found for provider '{}', falling back to default",
+                    "[AMP] No available credentials for provider '{}', refusing to fallback",
                     provider
                 ),
             );
-            anthropic_messages_internal(&state, &request).await
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "error": {
+                        "type": "provider_unavailable",
+                        "message": format!("No available credentials for provider '{}'", provider)
+                    }
+                })),
+            )
+                .into_response()
         }
     }
 }
@@ -1820,6 +1994,8 @@ async fn amp_management_proxy_internal(
 }
 
 /// 内部 Anthropic messages 处理 (使用默认 Kiro)
+/// 预留：用于内部直接调用 Kiro API
+#[allow(dead_code)]
 async fn anthropic_messages_internal(
     state: &AppState,
     request: &AnthropicMessagesRequest,
@@ -1887,6 +2063,8 @@ async fn anthropic_messages_internal(
 }
 
 /// 内部 OpenAI chat completions 处理 (使用默认 Kiro)
+/// 预留：用于内部直接调用 Kiro API
+#[allow(dead_code)]
 async fn chat_completions_internal(state: &AppState, request: &ChatCompletionRequest) -> Response {
     {
         let _guard = state.kiro_refresh_lock.lock().await;

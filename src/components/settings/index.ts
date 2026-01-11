@@ -6,3 +6,5 @@ export { AboutSection } from "./AboutSection";
 export { TlsSettings } from "./TlsSettings";
 export { QuotaSettings } from "./QuotaSettings";
 export { RemoteManagementSettings } from "./RemoteManagementSettings";
+export { DeveloperSettings } from "./DeveloperSettings";
+export { ExperimentalSettings } from "./ExperimentalSettings";

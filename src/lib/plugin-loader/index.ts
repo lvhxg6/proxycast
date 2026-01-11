@@ -34,6 +34,7 @@ const loadedPlugins = new Map<string, PluginModule>();
 /**
  * 插件 ID 到全局变量名的映射
  * 格式: pluginId -> GlobalVariableName
+ * 注意: terminal-plugin 已移除，终端功能已内置到应用中
  */
 const PLUGIN_GLOBAL_NAMES: Record<string, string> = {
   "kiro-provider": "KiroProviderPlugin",
@@ -51,25 +52,37 @@ const PLUGIN_GLOBAL_NAMES: Record<string, string> = {
 function getPluginGlobalName(pluginPath: string): string {
   // 从路径中提取插件 ID
   const parts = pluginPath.split("/");
-  const pluginIdIndex = parts.findIndex((p) => p.endsWith("-provider"));
-  const pluginId = pluginIdIndex >= 0 ? parts[pluginIdIndex] : null;
+
+  // 查找插件 ID（在 plugins 目录后的那个目录名）
+  const pluginsIndex = parts.findIndex((p) => p === "plugins");
+  const pluginId =
+    pluginsIndex >= 0 && pluginsIndex + 1 < parts.length
+      ? parts[pluginsIndex + 1]
+      : null;
+
+  console.log(`[PluginLoader] 从路径提取插件 ID: ${pluginId}`);
 
   // 查找预定义的全局变量名
   if (pluginId && PLUGIN_GLOBAL_NAMES[pluginId]) {
+    console.log(
+      `[PluginLoader] 使用预定义全局变量名: ${PLUGIN_GLOBAL_NAMES[pluginId]}`,
+    );
     return PLUGIN_GLOBAL_NAMES[pluginId];
   }
 
   // 尝试从插件 ID 推断全局变量名
-  // 例如: my-plugin -> MyPluginPlugin
+  // 例如: my-plugin -> MyPlugin
   if (pluginId) {
     const camelCase = pluginId
       .split("-")
       .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
       .join("");
+    console.log(`[PluginLoader] 推断全局变量名: ${camelCase}`);
     return camelCase;
   }
 
   // 默认回退
+  console.log(`[PluginLoader] 使用默认全局变量名: KiroProviderPlugin`);
   return "KiroProviderPlugin";
 }
 
@@ -114,6 +127,38 @@ function executeScript(code: string): Promise<void> {
 }
 
 /**
+ * 已加载的 CSS 缓存
+ */
+const loadedStyles = new Set<string>();
+
+/**
+ * 加载插件 CSS 样式
+ */
+async function loadPluginStyles(cssPath: string): Promise<void> {
+  // 检查是否已加载
+  if (loadedStyles.has(cssPath)) {
+    console.log(`[PluginLoader] CSS 已加载: ${cssPath}`);
+    return;
+  }
+
+  try {
+    const cssContent = await readPluginFile(cssPath);
+
+    // 创建 style 标签
+    const style = document.createElement("style");
+    style.setAttribute("data-plugin-css", cssPath);
+    style.textContent = cssContent;
+    document.head.appendChild(style);
+
+    loadedStyles.add(cssPath);
+    console.log(`[PluginLoader] CSS 加载成功: ${cssPath}`);
+  } catch (error) {
+    console.warn(`[PluginLoader] CSS 加载失败 (可能不存在): ${cssPath}`, error);
+    // CSS 加载失败不阻止插件加载
+  }
+}
+
+/**
  * 加载插件 UI 组件
  *
  * 插件使用 IIFE 格式构建，从全局变量获取依赖（React, ProxyCastPluginComponents）
@@ -131,6 +176,10 @@ export async function loadPluginUI(
   }
 
   try {
+    // 尝试加载 CSS 文件（与 JS 同目录的 styles.css）
+    const cssPath = pluginPath.replace(/\/[^/]+\.js$/, "/styles.css");
+    await loadPluginStyles(cssPath);
+
     // 读取插件文件内容
     const content = await readPluginFile(pluginPath);
 
@@ -142,6 +191,21 @@ export async function loadPluginUI(
     console.log(
       `[PluginLoader] 全局变量检查: React=${typeof (window as unknown as Record<string, unknown>).React}, ProxyCastPluginComponents=${typeof (window as unknown as Record<string, unknown>).ProxyCastPluginComponents}`,
     );
+
+    // 检查 ProxyCastPluginComponents 中的所有导出
+    const components = (window as unknown as Record<string, unknown>)
+      .ProxyCastPluginComponents as Record<string, unknown> | undefined;
+    if (components) {
+      const undefinedKeys = Object.keys(components).filter(
+        (key) => components[key] === undefined,
+      );
+      if (undefinedKeys.length > 0) {
+        console.error(
+          `[PluginLoader] ProxyCastPluginComponents 中有 undefined 的导出:`,
+          undefinedKeys,
+        );
+      }
+    }
 
     // 执行插件代码
     await executeScript(content);
