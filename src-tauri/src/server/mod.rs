@@ -26,8 +26,8 @@ use crate::providers::openai_custom::OpenAICustomProvider;
 use crate::providers::qwen::QwenProvider;
 use crate::server_utils::{
     build_anthropic_response, build_anthropic_stream_response, build_error_response,
-    build_error_response_with_status, build_gemini_native_request, health, models,
-    parse_cw_response,
+    build_error_response_with_status, build_gemini_cli_request, build_gemini_native_request,
+    health, models, parse_cw_response,
 };
 use crate::services::kiro_event_service::KiroEventService;
 use crate::services::provider_pool_service::ProviderPoolService;
@@ -1348,11 +1348,136 @@ async fn gemini_generate_content(
                 }
             }
         }
+        CredentialData::GeminiOAuth {
+            creds_file_path,
+            project_id,
+        } => {
+            // 使用 GeminiProvider 处理 Gemini CLI OAuth 凭证
+            let mut gemini = GeminiProvider::new();
+            if let Err(e) = gemini.load_credentials_from_path(creds_file_path).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": format!("加载 Gemini 凭证失败: {}", e)
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+
+            // 检查并刷新 Token
+            if !gemini.is_token_valid() {
+                tracing::info!("[Gemini CLI] Token 需要刷新，开始刷新...");
+                match gemini.refresh_token_with_retry(3).await {
+                    Ok(new_token) => {
+                        tracing::info!(
+                            "[Gemini CLI] Token 刷新成功，新 token 长度: {}",
+                            new_token.len()
+                        );
+                    }
+                    Err(refresh_error) => {
+                        tracing::error!("[Gemini CLI] Token 刷新失败: {:?}", refresh_error);
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "message": format!("Token 刷新失败: {}", refresh_error)
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // 设置项目 ID
+            if let Some(pid) = project_id {
+                gemini.project_id = Some(pid.clone());
+            } else if gemini.project_id.is_none() {
+                // 尝试从 API 获取项目 ID
+                if let Err(e) = gemini.discover_project().await {
+                    tracing::warn!("[Gemini CLI] 获取项目 ID 失败: {}，使用随机生成的 ID", e);
+                    let uuid = uuid::Uuid::new_v4();
+                    let bytes = uuid.as_bytes();
+                    let adjectives = ["useful", "bright", "swift", "calm", "bold"];
+                    let nouns = ["fuze", "wave", "spark", "flow", "core"];
+                    let adj = adjectives[(bytes[0] as usize) % adjectives.len()];
+                    let noun = nouns[(bytes[1] as usize) % nouns.len()];
+                    let random_part: String = uuid.to_string()[..5].to_lowercase();
+                    gemini.project_id = Some(format!("{}-{}-{}", adj, noun, random_part));
+                }
+            }
+
+            let proj_id = gemini.project_id.clone().unwrap_or_else(|| {
+                let uuid = uuid::Uuid::new_v4();
+                format!("proxycast-{}", &uuid.to_string()[..8])
+            });
+
+            state.logs.write().await.add(
+                "debug",
+                &format!("[GEMINI CLI] 使用 project_id: {}", proj_id),
+            );
+
+            // 构建 Gemini CLI 请求体
+            // Gemini CLI 使用 Cloud Code Assist 端点，不做模型名称映射
+            let gemini_request = build_gemini_cli_request(&request, model, &proj_id);
+
+            state.logs.write().await.add(
+                "debug",
+                &format!(
+                    "[GEMINI CLI] 请求体: {}",
+                    serde_json::to_string(&gemini_request).unwrap_or_default()
+                ),
+            );
+
+            if is_stream {
+                // 流式响应 - 暂不支持
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Gemini CLI 流式响应暂不支持，请使用 generateContent"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+
+            // 非流式响应
+            match gemini.call_api("generateContent", &gemini_request).await {
+                Ok(resp) => {
+                    state.logs.write().await.add(
+                        "info",
+                        &format!(
+                            "[GEMINI CLI] 响应成功: {}",
+                            serde_json::to_string(&resp)
+                                .unwrap_or_default()
+                                .chars()
+                                .take(200)
+                                .collect::<String>()
+                        ),
+                    );
+
+                    // 直接返回 Gemini 格式响应
+                    Json(resp).into_response()
+                }
+                Err(api_err) => {
+                    state
+                        .logs
+                        .write()
+                        .await
+                        .add("error", &format!("[GEMINI CLI] 请求失败: {}", api_err));
+
+                    build_error_response(&api_err.to_string())
+                }
+            }
+        }
         _ => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": {
-                    "message": "Gemini 原生协议只支持 Antigravity 凭证"
+                    "message": "Gemini 原生协议只支持 Antigravity 或 Gemini CLI OAuth 凭证"
                 }
             })),
         )

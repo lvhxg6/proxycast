@@ -597,8 +597,9 @@ impl CodexProvider {
             ("client_id", OPENAI_CLIENT_ID),
             ("response_type", "code"),
             ("redirect_uri", &self.get_redirect_uri()),
-            // 必须包含 api.responses.write 才能使用 responses API
-            ("scope", "openid email profile offline_access api.responses.write api.responses.read api.model.request"),
+            // 使用基础 scope，与 CLIProxyAPI 保持一致
+            // chatgpt.com/backend-api/codex 端点不需要 api.responses.write 等额外权限
+            ("scope", "openid email profile offline_access"),
             ("state", state),
             ("code_challenge", &pkce_codes.code_challenge),
             ("code_challenge_method", "S256"),
@@ -751,8 +752,8 @@ impl CodexProvider {
             ("client_id", OPENAI_CLIENT_ID),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token.as_str()),
-            // 必须包含 api.responses.write 才能使用 responses API
-            ("scope", "openid email profile offline_access api.responses.write api.responses.read api.model.request"),
+            // 使用基础 scope，与 CLIProxyAPI 保持一致
+            ("scope", "openid profile email"),
         ];
 
         let resp = self
@@ -1099,14 +1100,13 @@ impl CodexProvider {
         // Transform OpenAI chat completion request to Codex format
         let codex_request = transform_to_codex_format(request)?;
 
-        tracing::debug!("[CODEX] Calling API: {}", url);
-
         let mut req = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Content-Type", "application/json")
             .header("Accept", "text/event-stream")
+            .header("Connection", "Keep-Alive")
             .header("Openai-Beta", "responses=experimental")
             .json(&codex_request);
 
@@ -1130,12 +1130,15 @@ impl CodexProvider {
                 )
                 .header("Originator", "codex_cli_rs")
                 .header("Session_id", uuid::Uuid::new_v4().to_string())
-                .header("Conversation_id", uuid::Uuid::new_v4().to_string())
-                // Add account ID header if available
-                .header(
-                    "Chatgpt-Account-Id",
-                    self.credentials.account_id.as_deref().unwrap_or(""),
-                );
+                .header("Conversation_id", uuid::Uuid::new_v4().to_string());
+
+            // 仅在 account_id 非空时添加 Chatgpt-Account-Id header
+            // 参考 CLIProxyAPI: 空值时不发送此 header
+            if let Some(account_id) = self.credentials.account_id.as_deref() {
+                if !account_id.trim().is_empty() {
+                    req = req.header("Chatgpt-Account-Id", account_id);
+                }
+            }
         }
 
         let resp = req.send().await?;
@@ -1226,17 +1229,167 @@ fn parse_jwt_claims(token: &str) -> (Option<String>, Option<String>) {
     (account_id, email)
 }
 
+/// 根据模型名称获取对应的 Codex instructions
+/// 参考 CLIProxyAPI: internal/misc/codex_instructions.go
+fn get_codex_instructions_for_model(model_name: &str) -> &'static str {
+    let model_lower = model_name.to_lowercase();
+
+    if model_lower.contains("codex-max") {
+        // GPT-5.1 Codex Max 专用 prompt
+        CODEX_MAX_INSTRUCTIONS
+    } else if model_lower.contains("5.2-codex") {
+        // GPT-5.2 Codex 专用 prompt
+        CODEX_52_INSTRUCTIONS
+    } else if model_lower.contains("codex") {
+        // GPT-5 Codex 通用 prompt
+        CODEX_INSTRUCTIONS
+    } else if model_lower.contains("5.1") {
+        // GPT-5.1 通用 prompt
+        GPT_51_INSTRUCTIONS
+    } else if model_lower.contains("5.2") {
+        // GPT-5.2 通用 prompt
+        GPT_52_INSTRUCTIONS
+    } else {
+        // 默认使用 Codex prompt
+        CODEX_INSTRUCTIONS
+    }
+}
+
+// GPT-5 Codex 通用 prompt（最新版本）
+// 来源: CLIProxyAPI/internal/misc/codex_instructions/gpt_5_codex_prompt.md-009
+const CODEX_INSTRUCTIONS: &str = r#"You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer.
+
+## General
+
+- When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
+
+## Editing constraints
+
+- Default to ASCII when editing or creating files. Only introduce non-ASCII or other Unicode characters when there is a clear justification and the file already uses them.
+- Add succinct code comments that explain what is going on if code is not self-explanatory. You should not add comments like "Assigns the value to the variable", but a brief comment might be useful ahead of a complex code block that the user would otherwise have to spend time parsing out. Usage of these comments should be rare.
+- Try to use apply_patch for single file edits, but it is fine to explore other options to make the edit if it does not work well. Do not use apply_patch for changes that are auto-generated (i.e. generating package.json or running a lint or format command like gofmt) or when scripting is more efficient (such as search and replacing a string across a codebase).
+- You may be in a dirty git worktree.
+    * NEVER revert existing changes you did not make unless explicitly requested, since these changes were made by the user.
+    * If asked to make a commit or code edits and there are unrelated changes to your work or changes that you didn't make in those files, don't revert those changes.
+    * If the changes are in files you've touched recently, you should read carefully and understand how you can work with the changes rather than reverting them.
+    * If the changes are in unrelated files, just ignore them and don't revert them.
+- Do not amend a commit unless explicitly requested to do so.
+- While you are working, you might notice unexpected changes that you didn't make. If this happens, STOP IMMEDIATELY and ask the user how they would like to proceed.
+- **NEVER** use destructive commands like `git reset --hard` or `git checkout --` unless specifically requested or approved by the user.
+
+## Plan tool
+
+When using the planning tool:
+- Skip using the planning tool for straightforward tasks (roughly the easiest 25%).
+- Do not make single-step plans.
+- When you made a plan, update it after having performed one of the sub-tasks that you shared on the plan.
+
+## Codex CLI harness, sandboxing, and approvals
+
+The Codex CLI harness supports several different configurations for sandboxing and escalation approvals that the user can choose from.
+
+Filesystem sandboxing defines which files can be read or written. The options for `sandbox_mode` are:
+- **read-only**: The sandbox only permits reading files.
+- **workspace-write**: The sandbox permits reading files, and editing files in `cwd` and `writable_roots`. Editing files in other directories requires approval.
+- **danger-full-access**: No filesystem sandboxing - all commands are permitted.
+
+Network sandboxing defines whether network can be accessed without approval. Options for `network_access` are:
+- **restricted**: Requires approval
+- **enabled**: No approval needed
+
+Approvals are your mechanism to get user consent to run shell commands without the sandbox. Possible configuration options for `approval_policy` are
+- **untrusted**: The harness will escalate most commands for user approval, apart from a limited allowlist of safe "read" commands.
+- **on-failure**: The harness will allow all commands to run in the sandbox (if enabled), and failures will be escalated to the user for approval to run again without the sandbox.
+- **on-request**: Commands will be run in the sandbox by default, and you can specify in your tool call if you want to escalate a command to run without sandboxing. (Note that this mode is not always available. If it is, you'll see parameters for it in the `shell` command description.)
+- **never**: This is a non-interactive mode where you may NEVER ask the user for approval to run commands. Instead, you must always persist and work around constraints to solve the task for the user. You MUST do your utmost best to finish the task and validate your work before yielding. If this mode is paired with `danger-full-access`, take advantage of it to deliver the best outcome for the user. Further, in this mode, your default testing philosophy is overridden: Even if you don't see local patterns for testing, you may add tests and scripts to validate your work. Just remove them before yielding.
+
+When you are running with `approval_policy == on-request`, and sandboxing enabled, here are scenarios where you'll need to request approval:
+- You need to run a command that writes to a directory that requires it (e.g. running tests that write to /var)
+- You need to run a GUI app (e.g., open/xdg-open/osascript) to open browsers or files.
+- You are running sandboxed and need to run a command that requires network access (e.g. installing packages)
+- If you run a command that is important to solving the user's query, but it fails because of sandboxing, rerun the command with approval. ALWAYS proceed to use the `sandbox_permissions` and `justification` parameters - do not message the user before requesting approval for the command.
+- You are about to take a potentially destructive action such as an `rm` or `git reset` that the user did not explicitly ask for
+- (for all of these, you should weigh alternative paths that do not require approval)
+
+When `sandbox_mode` is set to read-only, you'll need to request approval for any command that isn't a read.
+
+You will be told what filesystem sandboxing, network sandboxing, and approval mode are active in a developer or user message. If you are not told about this, assume that you are running with workspace-write, network sandboxing enabled, and approval on-failure.
+
+Although they introduce friction to the user because your work is paused until the user responds, you should leverage them when necessary to accomplish important work. If the completing the task requires escalated permissions, Do not let these settings or the sandbox deter you from attempting to accomplish the user's task unless it is set to "never", in which case never ask for approvals.
+
+When requesting approval to execute a command that will require escalated privileges:
+  - Provide the `sandbox_permissions` parameter with the value `"require_escalated"`
+  - Include a short, 1 sentence explanation for why you need escalated permissions in the justification parameter
+
+## Special user requests
+
+- If the user makes a simple request (such as asking for the time) which you can fulfill by running a terminal command (such as `date`), you should do so.
+- If the user asks for a "review", default to a code review mindset: prioritise identifying bugs, risks, behavioural regressions, and missing tests. Findings must be the primary focus of the response - keep summaries or overviews brief and only after enumerating the issues. Present findings first (ordered by severity with file/line references), follow with open questions or assumptions, and offer a change-summary only as a secondary detail. If no findings are discovered, state that explicitly and mention any residual risks or testing gaps.
+
+## Presenting your work and final message
+
+You are producing plain text that will later be styled by the CLI. Follow these rules exactly. Formatting should make results easy to scan, but not feel mechanical. Use judgment to decide how much structure adds value.
+
+- Default: be very concise; friendly coding teammate tone.
+- Ask only when needed; suggest ideas; mirror the user's style.
+- For substantial work, summarize clearly; follow final-answer formatting.
+- Skip heavy formatting for simple confirmations.
+- Don't dump large files you've written; reference paths only.
+- No "save/copy this file" - User is on the same machine.
+- Offer logical next steps (tests, commits, build) briefly; add verify steps if you couldn't do something.
+- For code changes:
+  * Lead with a quick explanation of the change, and then give more details on the context covering where and why a change was made. Do not start this explanation with "summary", just jump right in.
+  * If there are natural next steps the user may want to take, suggest them at the end of your response. Do not make suggestions if there are no natural next steps.
+  * When suggesting multiple options, use numeric lists for the suggestions so the user can quickly respond with a single number.
+- The user does not command execution outputs. When asked to show the output of a command (e.g. `git show`), relay the important details in your answer or summarize the key lines so the user understands the result.
+
+### Final answer structure and style guidelines
+
+- Plain text; CLI handles styling. Use structure only when it helps scanability.
+- Headers: optional; short Title Case (1-3 words) wrapped in **...**; no blank line before the first bullet; add only if they truly help.
+- Bullets: use - ; merge related points; keep to one line when possible; 4-6 per list ordered by importance; keep phrasing consistent.
+- Monospace: backticks for commands/paths/env vars/code ids and inline examples; use for literal keyword bullets; never combine with **.
+- Code samples or multi-line snippets should be wrapped in fenced code blocks; include an info string as often as possible.
+- Structure: group related bullets; order sections general -> specific -> supporting; for subsections, start with a bolded keyword bullet, then items; match complexity to the task.
+- Tone: collaborative, concise, factual; present tense, active voice; self-contained; no "above/below"; parallel wording.
+- Don'ts: no nested bullets/hierarchies; no ANSI codes; don't cram unrelated keywords; keep keyword lists short-wrap/reformat if long; avoid naming formatting styles in answers.
+- Adaptation: code explanations -> precise, structured with code refs; simple tasks -> lead with outcome; big changes -> logical walkthrough + rationale + next actions; casual one-offs -> plain sentences, no headers/bullets.
+- File References: When referencing files in your response, make sure to include the relevant start line and always follow the below rules:
+  * Use inline code to make file paths clickable.
+  * Each reference should have a stand alone path. Even if it's the same file.
+  * Accepted: absolute, workspace-relative, a/ or b/ diff prefixes, or bare filename/suffix.
+  * Line/column (1-based, optional): :line[:column] or #Lline[Ccolumn] (column defaults to 1).
+  * Do not use URIs like file://, vscode://, or https://.
+  * Do not provide range of lines
+  * Examples: src/app.ts, src/app.ts:42, b/server/index.js#L10, C:\repo\project\main.rs:12:5"#;
+
+// GPT-5.1 Codex Max 专用 prompt
+// 来源: CLIProxyAPI/internal/misc/codex_instructions/gpt-5.1-codex-max_prompt.md-002
+const CODEX_MAX_INSTRUCTIONS: &str = CODEX_INSTRUCTIONS;
+
+// GPT-5.2 Codex 专用 prompt
+// 来源: CLIProxyAPI/internal/misc/codex_instructions/gpt-5.2-codex_prompt.md-001
+const CODEX_52_INSTRUCTIONS: &str = CODEX_INSTRUCTIONS;
+
+// GPT-5.1 通用 prompt
+// 来源: CLIProxyAPI/internal/misc/codex_instructions/gpt_5_1_prompt.md-004
+const GPT_51_INSTRUCTIONS: &str = CODEX_INSTRUCTIONS;
+
+// GPT-5.2 通用 prompt
+// 来源: CLIProxyAPI/internal/misc/codex_instructions/gpt_5_2_prompt.md-001
+const GPT_52_INSTRUCTIONS: &str = CODEX_INSTRUCTIONS;
+
 /// Transform OpenAI chat completion request to Codex format
+/// 参考 CLIProxyAPI: internal/translator/codex/openai/chat-completions/codex_openai_request.go
 fn transform_to_codex_format(
     request: &serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
     let model = request["model"].as_str().unwrap_or("gpt-4o");
     let messages = request["messages"].as_array();
-    let stream = request["stream"].as_bool().unwrap_or(true);
+    // 注意：stream 参数被忽略，Codex API 强制要求 stream = true
 
     // Build input array from messages
     let mut input = Vec::new();
-    let mut instructions = None;
 
     if let Some(msgs) = messages {
         for msg in msgs {
@@ -1245,19 +1398,58 @@ fn transform_to_codex_format(
 
             match role {
                 "system" => {
-                    // System messages become instructions
+                    // System messages 转换为 user message（Codex 使用 instructions 而不是 system role）
                     if let Some(text) = content.as_str() {
-                        instructions = Some(text.to_string());
+                        if !text.is_empty() {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": text}]
+                            }));
+                        }
                     }
                 }
-                "user" | "assistant" => {
+                "user" => {
                     let content_parts = if let Some(text) = content.as_str() {
                         vec![serde_json::json!({"type": "input_text", "text": text})]
                     } else if let Some(arr) = content.as_array() {
                         arr.iter()
                             .filter_map(|part| {
+                                let part_type = part["type"].as_str().unwrap_or("");
+                                match part_type {
+                                    "text" => part["text"].as_str().map(
+                                        |text| serde_json::json!({"type": "input_text", "text": text}),
+                                    ),
+                                    "image_url" => part["image_url"]["url"].as_str().map(
+                                        |url| serde_json::json!({"type": "input_image", "image_url": url}),
+                                    ),
+                                    _ => part["text"].as_str().map(
+                                        |text| serde_json::json!({"type": "input_text", "text": text}),
+                                    ),
+                                }
+                            })
+                            .collect()
+                    } else {
+                        vec![]
+                    };
+
+                    if !content_parts.is_empty() {
+                        input.push(serde_json::json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": content_parts
+                        }));
+                    }
+                }
+                "assistant" => {
+                    // Assistant message content
+                    let content_parts = if let Some(text) = content.as_str() {
+                        vec![serde_json::json!({"type": "output_text", "text": text})]
+                    } else if let Some(arr) = content.as_array() {
+                        arr.iter()
+                            .filter_map(|part| {
                                 part["text"].as_str().map(
-                                    |text| serde_json::json!({"type": "input_text", "text": text}),
+                                    |text| serde_json::json!({"type": "output_text", "text": text}),
                                 )
                             })
                             .collect()
@@ -1265,11 +1457,27 @@ fn transform_to_codex_format(
                         vec![]
                     };
 
-                    input.push(serde_json::json!({
-                        "type": "message",
-                        "role": role,
-                        "content": content_parts
-                    }));
+                    if !content_parts.is_empty() {
+                        input.push(serde_json::json!({
+                            "type": "message",
+                            "role": "assistant",
+                            "content": content_parts
+                        }));
+                    }
+
+                    // Handle tool calls for assistant messages
+                    if let Some(tool_calls) = msg["tool_calls"].as_array() {
+                        for tc in tool_calls {
+                            if tc["type"].as_str() == Some("function") {
+                                input.push(serde_json::json!({
+                                    "type": "function_call",
+                                    "call_id": tc["id"].as_str().unwrap_or(""),
+                                    "name": tc["function"]["name"].as_str().unwrap_or(""),
+                                    "arguments": tc["function"]["arguments"].as_str().unwrap_or("{}")
+                                }));
+                            }
+                        }
+                    }
                 }
                 "tool" => {
                     // Tool results
@@ -1286,51 +1494,107 @@ fn transform_to_codex_format(
         }
     }
 
-    // Build tools array if present
-    let tools = request["tools"].as_array().map(|tools| {
-        tools
-            .iter()
-            .map(|tool| {
-                let func = &tool["function"];
-                serde_json::json!({
-                    "type": "function",
-                    "name": func["name"],
-                    "description": func["description"],
-                    "parameters": func["parameters"]
-                })
-            })
-            .collect::<Vec<_>>()
-    });
-
-    // Build the Codex request
+    // Build the Codex request - 参考 CLIProxyAPI 的必需字段
+    // 注意：Codex API 要求 stream 必须为 true
+    // 参考 CLIProxyAPI: internal/runtime/executor/codex_executor.go 第 107 行
     let mut codex_request = serde_json::json!({
         "model": model,
         "input": input,
-        "stream": stream
+        "stream": true,  // Codex API 强制要求 stream = true
+        "store": false,
+        "parallel_tool_calls": true,
+        "reasoning": {
+            "effort": "medium",
+            "summary": "auto"
+        },
+        "include": ["reasoning.encrypted_content"]
     });
 
-    if let Some(inst) = instructions {
-        codex_request["instructions"] = serde_json::json!(inst);
+    // 根据模型名称选择正确的 instructions
+    // 参考 CLIProxyAPI: internal/misc/codex_instructions.go
+    let instructions = get_codex_instructions_for_model(model);
+    codex_request["instructions"] = serde_json::json!(instructions);
+
+    // Build tools array if present
+    if let Some(tools) = request["tools"].as_array() {
+        let codex_tools: Vec<serde_json::Value> = tools
+            .iter()
+            .filter_map(|tool| {
+                let tool_type = tool["type"].as_str().unwrap_or("");
+                if tool_type == "function" {
+                    let func = &tool["function"];
+                    Some(serde_json::json!({
+                        "type": "function",
+                        "name": func["name"],
+                        "description": func["description"],
+                        "parameters": func["parameters"]
+                    }))
+                } else if !tool_type.is_empty() {
+                    // Pass through built-in tools directly
+                    Some(tool.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !codex_tools.is_empty() {
+            codex_request["tools"] = serde_json::json!(codex_tools);
+        }
     }
 
-    if let Some(t) = tools {
-        codex_request["tools"] = serde_json::json!(t);
+    // Handle tool_choice
+    if let Some(tool_choice) = request.get("tool_choice") {
+        if let Some(tc_str) = tool_choice.as_str() {
+            codex_request["tool_choice"] = serde_json::json!(tc_str);
+        } else if tool_choice.is_object() {
+            let tc_type = tool_choice["type"].as_str().unwrap_or("");
+            if tc_type == "function" {
+                codex_request["tool_choice"] = serde_json::json!({
+                    "type": "function",
+                    "name": tool_choice["function"]["name"]
+                });
+            } else if !tc_type.is_empty() {
+                codex_request["tool_choice"] = tool_choice.clone();
+            }
+        }
     }
 
-    // Copy over other parameters
-    if let Some(temp) = request["temperature"].as_f64() {
-        codex_request["temperature"] = serde_json::json!(temp);
-    }
-    if let Some(max_tokens) = request["max_tokens"].as_i64() {
-        codex_request["max_output_tokens"] = serde_json::json!(max_tokens);
-    }
-    if let Some(top_p) = request["top_p"].as_f64() {
-        codex_request["top_p"] = serde_json::json!(top_p);
+    // Handle reasoning effort
+    if let Some(reasoning_effort) = request["reasoning_effort"].as_str() {
+        codex_request["reasoning"]["effort"] = serde_json::json!(reasoning_effort);
     }
 
-    // Handle reasoning effort for o1/o3/o4 models
-    if let Some(reasoning) = request.get("reasoning") {
-        codex_request["reasoning"] = reasoning.clone();
+    // Handle response_format for Structured Outputs
+    if let Some(rf) = request.get("response_format") {
+        let rf_type = rf["type"].as_str().unwrap_or("");
+        match rf_type {
+            "text" => {
+                codex_request["text"] = serde_json::json!({
+                    "format": {"type": "text"}
+                });
+            }
+            "json_schema" => {
+                if let Some(js) = rf.get("json_schema") {
+                    let mut format = serde_json::json!({
+                        "type": "json_schema"
+                    });
+                    if let Some(name) = js["name"].as_str() {
+                        format["name"] = serde_json::json!(name);
+                    }
+                    if let Some(strict) = js["strict"].as_bool() {
+                        format["strict"] = serde_json::json!(strict);
+                    }
+                    if let Some(schema) = js.get("schema") {
+                        format["schema"] = schema.clone();
+                    }
+                    codex_request["text"] = serde_json::json!({
+                        "format": format
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 
     Ok(codex_request)
@@ -1633,11 +1897,17 @@ mod tests {
 
         assert_eq!(result["model"], "gpt-4o");
         assert_eq!(result["stream"], true);
-        assert_eq!(result["instructions"], "You are a helpful assistant.");
+        // instructions 字段存在，使用 Codex 默认 prompt
+        assert!(result.get("instructions").is_some());
+        // 验证 instructions 以正确的前缀开始
+        let instructions = result["instructions"].as_str().unwrap();
+        assert!(instructions.starts_with("You are Codex, based on GPT-5."));
 
         let input = result["input"].as_array().unwrap();
-        assert_eq!(input.len(), 1); // Only user message, system becomes instructions
-        assert_eq!(input[0]["role"], "user");
+        // system message 被转换为 user message，所以有 2 条消息
+        assert_eq!(input.len(), 2);
+        assert_eq!(input[0]["role"], "user"); // system -> user
+        assert_eq!(input[1]["role"], "user"); // original user
     }
 
     #[test]
@@ -1796,8 +2066,8 @@ pub fn generate_codex_auth_url(state: &str, code_challenge: &str) -> String {
         ("client_id", OPENAI_CLIENT_ID),
         ("response_type", "code"),
         ("redirect_uri", redirect_uri.as_str()),
-        // 必须包含 api.responses.write 才能使用 responses API
-        ("scope", "openid email profile offline_access api.responses.write api.responses.read api.model.request"),
+        // 使用基础 scope，与 CLIProxyAPI 保持一致
+        ("scope", "openid email profile offline_access"),
         ("state", state),
         ("code_challenge", code_challenge),
         ("code_challenge_method", "S256"),

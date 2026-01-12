@@ -59,8 +59,8 @@ use crate::models::anthropic::AnthropicMessagesRequest;
 use crate::models::openai::ChatCompletionRequest;
 use crate::models::provider_pool_model::{CredentialData, ProviderCredential};
 use crate::providers::{
-    AntigravityApiError, AntigravityProvider, ClaudeCustomProvider, IFlowProvider, KiroProvider,
-    OpenAICustomProvider, VertexProvider,
+    AntigravityApiError, AntigravityProvider, ClaudeCustomProvider, CodexProvider, IFlowProvider,
+    KiroProvider, OpenAICustomProvider, VertexProvider,
 };
 use crate::server::AppState;
 use crate::server_utils::{
@@ -302,12 +302,18 @@ pub async fn call_provider_anthropic(
                     }
                 }
             } else {
+                let status_code = status.as_u16();
                 let body = resp.text().await.unwrap_or_default();
-                let _ = state
-                    .pool_service
-                    .mark_unhealthy(db, &credential.uuid, Some(&body));
+                eprintln!("[PROVIDER_CALL] Kiro 请求失败: status={} body={}", status_code, &body[..body.len().min(500)]);
+                // 只有 5xx 错误才标记为不健康
+                if status_code >= 500 {
+                    let _ = state
+                        .pool_service
+                        .mark_unhealthy(db, &credential.uuid, Some(&body));
+                }
+                // 转发上游的实际状态码
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     Json(serde_json::json!({"error": {"message": body}})),
                 )
                     .into_response()
@@ -460,7 +466,8 @@ pub async fn call_provider_anthropic(
             let openai_request = convert_anthropic_to_openai(request);
             match openai.call_api(&openai_request).await {
                 Ok(resp) => {
-                    if resp.status().is_success() {
+                    let status = resp.status();
+                    if status.is_success() {
                         match resp.text().await {
                             Ok(body) => {
                                 // 记录原始响应以便调试
@@ -526,16 +533,22 @@ pub async fn call_provider_anthropic(
                             }
                         }
                     } else {
+                        let status_code = status.as_u16();
                         let body = resp.text().await.unwrap_or_default();
-                        if let Some(db) = &state.db {
-                            let _ = state.pool_service.mark_unhealthy(
-                                db,
-                                &credential.uuid,
-                                Some(&body),
-                            );
+                        eprintln!("[PROVIDER_CALL] OpenAI 请求失败: status={} body={}", status_code, &body[..body.len().min(500)]);
+                        // 只有 5xx 错误才标记为不健康，4xx 错误（如模型不支持）不应该标记凭证为不健康
+                        if status_code >= 500 {
+                            if let Some(db) = &state.db {
+                                let _ = state.pool_service.mark_unhealthy(
+                                    db,
+                                    &credential.uuid,
+                                    Some(&body),
+                                );
+                            }
                         }
+                        // 转发上游的实际状态码
                         (
-                            StatusCode::INTERNAL_SERVER_ERROR,
+                            StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                             Json(serde_json::json!({"error": {"message": body}})),
                         )
                             .into_response()
@@ -550,7 +563,7 @@ pub async fn call_provider_anthropic(
                         );
                     }
                     (
-                        StatusCode::INTERNAL_SERVER_ERROR,
+                        StatusCode::BAD_GATEWAY,
                         Json(serde_json::json!({"error": {"message": e.to_string()}})),
                     )
                         .into_response()
@@ -2062,9 +2075,205 @@ pub async fn call_provider_openai(
                 }
             }
         }
+        // Codex OAuth 凭证处理
+        CredentialData::CodexOAuth {
+            creds_file_path,
+            api_base_url,
+        } => {
+            // 加载 Codex 凭证
+            let mut codex = CodexProvider::new();
+            if let Err(e) = codex.load_credentials_from_path(creds_file_path).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": {"message": format!("Failed to load Codex credentials: {}", e)}})),
+                )
+                    .into_response();
+            }
+
+            // 如果配置了自定义 API Base URL，覆盖凭证文件中的配置
+            if let Some(base_url) = api_base_url {
+                if !base_url.trim().is_empty() {
+                    codex.credentials.api_base_url = Some(base_url.clone());
+                }
+            }
+
+            // 确保 token 有效
+            if let Err(e) = codex.ensure_valid_token().await {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({"error": {"message": format!("Codex token refresh failed: {}", e)}})),
+                )
+                    .into_response();
+            }
+
+            // 将 ChatCompletionRequest 转换为 serde_json::Value
+            let request_json = match serde_json::to_value(request) {
+                Ok(v) => v,
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({"error": {"message": format!("Failed to serialize request: {}", e)}})),
+                    )
+                        .into_response();
+                }
+            };
+
+            // 调用 Codex API
+            match codex.call_api(&request_json).await {
+                Ok(response) => {
+                    let status = response.status();
+                    let headers = response.headers().clone();
+
+                    // 检查是否为流式响应
+                    if request.stream {
+                        // 流式响应：读取 Codex SSE 流，转换为 OpenAI SSE 格式
+                        // 参考 CLIProxyAPI: internal/translator/codex/openai/chat-completions/codex_openai_response.go
+                        use std::sync::Arc;
+                        use tokio::sync::Mutex;
+
+                        let bytes_stream = response.bytes_stream();
+
+                        // 创建转换状态（包含缓冲区）
+                        struct StreamState {
+                            convert_state: CodexConvertState,
+                            buffer: String,
+                        }
+
+                        let state = Arc::new(Mutex::new(StreamState {
+                            convert_state: CodexConvertState::default(),
+                            buffer: String::new(),
+                        }));
+
+                        let converted_stream = bytes_stream.map(move |result| {
+                            let state = Arc::clone(&state);
+                            async move {
+                                match result {
+                                    Ok(bytes) => {
+                                        let chunk = String::from_utf8_lossy(&bytes);
+                                        let mut state = state.lock().await;
+                                        state.buffer.push_str(&chunk);
+
+                                        let mut output = String::new();
+
+                                        // 处理缓冲区中的完整行
+                                        while let Some(newline_pos) = state.buffer.find('\n') {
+                                            let line = state.buffer[..newline_pos].to_string();
+                                            state.buffer = state.buffer[newline_pos + 1..].to_string();
+
+                                            if let Some(data) = line.strip_prefix("data: ") {
+                                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                                    if let Some(converted) = convert_codex_event_to_openai_sse_with_state(
+                                                        &json,
+                                                        &mut state.convert_state,
+                                                    ) {
+                                                        output.push_str(&format!("data: {}\n\n", converted));
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        Ok::<_, std::io::Error>(bytes::Bytes::from(output))
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("[Codex] Stream error: {}", e);
+                                        Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                                    }
+                                }
+                            }
+                        }).buffer_unordered(1).filter_map(|result| async move {
+                            match result {
+                                Ok(bytes) if !bytes.is_empty() => Some(Ok(bytes)),
+                                Ok(_) => None,
+                                Err(e) => Some(Err(e)),
+                            }
+                        });
+
+                        let body = Body::from_stream(converted_stream);
+                        let mut response_builder = Response::builder()
+                            .status(status)
+                            .header(header::CONTENT_TYPE, "text/event-stream")
+                            .header(header::CACHE_CONTROL, "no-cache")
+                            .header(header::CONNECTION, "keep-alive");
+
+                        for (key, value) in headers.iter() {
+                            if key != header::CONTENT_TYPE
+                                && key != header::TRANSFER_ENCODING
+                                && key != header::CONTENT_LENGTH
+                            {
+                                response_builder = response_builder.header(key, value);
+                            }
+                        }
+
+                        response_builder.body(body).unwrap_or_else(|_| {
+                            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response")
+                                .into_response()
+                        })
+                    } else {
+                        // 非流式响应：读取 SSE 流，解析 response.completed 事件，转换为 OpenAI 格式
+                        // 参考 CLIProxyAPI: internal/translator/codex/openai/chat-completions/codex_openai_response.go
+                        match response.bytes().await {
+                            Ok(body) => {
+                                // 解析 SSE 数据，查找 response.completed 事件
+                                let body_str = String::from_utf8_lossy(&body);
+                                let mut completed_data: Option<serde_json::Value> = None;
+
+                                for line in body_str.lines() {
+                                    if let Some(data) = line.strip_prefix("data: ") {
+                                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                                            if json.get("type").and_then(|t| t.as_str()) == Some("response.completed") {
+                                                completed_data = Some(json);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                match completed_data {
+                                    Some(codex_response) => {
+                                        // 转换为 OpenAI Chat Completions 格式
+                                        let openai_response = convert_codex_to_openai_non_stream(&codex_response);
+                                        Response::builder()
+                                            .status(StatusCode::OK)
+                                            .header(header::CONTENT_TYPE, "application/json")
+                                            .body(Body::from(openai_response.to_string()))
+                                            .unwrap_or_else(|_| {
+                                                (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response")
+                                                    .into_response()
+                                            })
+                                    }
+                                    None => {
+                                        tracing::error!("[Codex] No response.completed event found in SSE stream");
+                                        (
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                            Json(serde_json::json!({"error": {"message": "No response.completed event found in Codex response"}})),
+                                        )
+                                            .into_response()
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("[Codex] Failed to read response body: {}", e);
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(serde_json::json!({"error": {"message": format!("Failed to read Codex response: {}", e)}})),
+                                )
+                                    .into_response()
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("[Codex] API call failed: {}", e);
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        Json(serde_json::json!({"error": {"message": format!("Codex API call failed: {}", e)}})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         // 新增的凭证类型暂不支持 OpenAI 格式
-        CredentialData::CodexOAuth { .. }
-        | CredentialData::ClaudeOAuth { .. } => {
+        CredentialData::ClaudeOAuth { .. } => {
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": {"message": "This credential type does not support OpenAI format yet"}})),
@@ -3455,4 +3664,320 @@ fn convert_openai_response_to_anthropic(
             "output_tokens": openai_resp.usage.completion_tokens
         }
     })
+}
+
+/// 将 Codex response.completed 事件转换为 OpenAI Chat Completions 非流式响应格式
+/// 参考 CLIProxyAPI: internal/translator/codex/openai/chat-completions/codex_openai_response.go
+fn convert_codex_to_openai_non_stream(codex_response: &serde_json::Value) -> serde_json::Value {
+    let response = &codex_response["response"];
+
+    // 提取基本信息
+    let id = response["id"].as_str().unwrap_or("").to_string();
+    let model = response["model"].as_str().unwrap_or("gpt-5").to_string();
+    let created = response["created_at"].as_i64().unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    });
+
+    // 提取 usage 信息
+    let usage = &response["usage"];
+    let prompt_tokens = usage["input_tokens"].as_i64().unwrap_or(0);
+    let completion_tokens = usage["output_tokens"].as_i64().unwrap_or(0);
+    let total_tokens = usage["total_tokens"]
+        .as_i64()
+        .unwrap_or(prompt_tokens + completion_tokens);
+    let reasoning_tokens = usage["output_tokens_details"]["reasoning_tokens"].as_i64();
+
+    // 处理 output 数组，提取 content、reasoning_content 和 tool_calls
+    let mut content_text: Option<String> = None;
+    let mut reasoning_text: Option<String> = None;
+    let mut tool_calls: Vec<serde_json::Value> = Vec::new();
+
+    if let Some(output_array) = response["output"].as_array() {
+        for output_item in output_array {
+            let output_type = output_item["type"].as_str().unwrap_or("");
+
+            match output_type {
+                "reasoning" => {
+                    // 提取 reasoning content from summary
+                    if let Some(summary_array) = output_item["summary"].as_array() {
+                        for summary_item in summary_array {
+                            if summary_item["type"].as_str() == Some("summary_text") {
+                                reasoning_text =
+                                    summary_item["text"].as_str().map(|s| s.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                "message" => {
+                    // 提取 message content
+                    if let Some(content_array) = output_item["content"].as_array() {
+                        for content_item in content_array {
+                            if content_item["type"].as_str() == Some("output_text") {
+                                content_text = content_item["text"].as_str().map(|s| s.to_string());
+                                break;
+                            }
+                        }
+                    }
+                }
+                "function_call" => {
+                    // 处理 function call
+                    let call_id = output_item["call_id"].as_str().unwrap_or("").to_string();
+                    let name = output_item["name"].as_str().unwrap_or("").to_string();
+                    let arguments = output_item["arguments"]
+                        .as_str()
+                        .unwrap_or("{}")
+                        .to_string();
+
+                    tool_calls.push(serde_json::json!({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": arguments
+                        }
+                    }));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 确定 finish_reason
+    let finish_reason = if !tool_calls.is_empty() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+
+    // 构建 message 对象
+    let mut message = serde_json::json!({
+        "role": "assistant"
+    });
+
+    if let Some(content) = content_text {
+        message["content"] = serde_json::json!(content);
+    } else {
+        message["content"] = serde_json::Value::Null;
+    }
+
+    if let Some(reasoning) = reasoning_text {
+        message["reasoning_content"] = serde_json::json!(reasoning);
+    }
+
+    if !tool_calls.is_empty() {
+        message["tool_calls"] = serde_json::json!(tool_calls);
+    }
+
+    // 构建 usage 对象
+    let mut usage_obj = serde_json::json!({
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens
+    });
+
+    if let Some(reasoning) = reasoning_tokens {
+        usage_obj["completion_tokens_details"] = serde_json::json!({
+            "reasoning_tokens": reasoning
+        });
+    }
+
+    // 构建完整响应
+    serde_json::json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": message,
+            "finish_reason": finish_reason,
+            "native_finish_reason": finish_reason
+        }],
+        "usage": usage_obj
+    })
+}
+
+/// Codex SSE 转换状态
+#[derive(Default)]
+struct CodexConvertState {
+    response_id: String,
+    created_at: i64,
+    model: String,
+    function_call_index: i32,
+}
+
+/// 将单个 Codex SSE 事件转换为 OpenAI SSE 格式（使用状态结构体）
+/// 参考 CLIProxyAPI: internal/translator/codex/openai/chat-completions/codex_openai_response.go
+fn convert_codex_event_to_openai_sse_with_state(
+    codex_event: &serde_json::Value,
+    state: &mut CodexConvertState,
+) -> Option<String> {
+    convert_codex_event_to_openai_sse(
+        codex_event,
+        &mut state.response_id,
+        &mut state.created_at,
+        &mut state.model,
+        &mut state.function_call_index,
+    )
+}
+
+/// 将单个 Codex SSE 事件转换为 OpenAI SSE 格式
+/// 参考 CLIProxyAPI: internal/translator/codex/openai/chat-completions/codex_openai_response.go
+fn convert_codex_event_to_openai_sse(
+    codex_event: &serde_json::Value,
+    response_id: &mut String,
+    created_at: &mut i64,
+    model: &mut String,
+    function_call_index: &mut i32,
+) -> Option<String> {
+    let event_type = codex_event.get("type")?.as_str()?;
+
+    match event_type {
+        "response.created" => {
+            // 保存响应元数据
+            *response_id = codex_event["response"]["id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            *created_at = codex_event["response"]["created_at"].as_i64().unwrap_or(0);
+            *model = codex_event["response"]["model"]
+                .as_str()
+                .unwrap_or("gpt-5")
+                .to_string();
+            None
+        }
+        "response.output_text.delta" => {
+            // 文本增量
+            let delta = codex_event.get("delta")?.as_str()?;
+            let chunk = serde_json::json!({
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_at,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "content": delta
+                    },
+                    "finish_reason": null
+                }]
+            });
+            Some(chunk.to_string())
+        }
+        "response.reasoning_summary_text.delta" => {
+            // 推理内容增量
+            let delta = codex_event.get("delta")?.as_str()?;
+            let chunk = serde_json::json!({
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_at,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning_content": delta
+                    },
+                    "finish_reason": null
+                }]
+            });
+            Some(chunk.to_string())
+        }
+        "response.reasoning_summary_text.done" => {
+            // 推理内容结束，添加换行
+            let chunk = serde_json::json!({
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_at,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning_content": "\n\n"
+                    },
+                    "finish_reason": null
+                }]
+            });
+            Some(chunk.to_string())
+        }
+        "response.output_item.done" => {
+            // 处理 function_call 完成事件
+            let item = codex_event.get("item")?;
+            if item.get("type")?.as_str()? != "function_call" {
+                return None;
+            }
+
+            *function_call_index += 1;
+
+            let call_id = item["call_id"].as_str().unwrap_or("").to_string();
+            let name = item["name"].as_str().unwrap_or("").to_string();
+            let arguments = item["arguments"].as_str().unwrap_or("{}").to_string();
+
+            let chunk = serde_json::json!({
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_at,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "index": function_call_index,
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": arguments
+                            }
+                        }]
+                    },
+                    "finish_reason": null
+                }]
+            });
+            Some(chunk.to_string())
+        }
+        "response.completed" => {
+            // 响应完成
+            let finish_reason = if *function_call_index != -1 {
+                "tool_calls"
+            } else {
+                "stop"
+            };
+
+            // 提取 usage 信息
+            let usage = &codex_event["response"]["usage"];
+            let prompt_tokens = usage["input_tokens"].as_i64().unwrap_or(0);
+            let completion_tokens = usage["output_tokens"].as_i64().unwrap_or(0);
+            let total_tokens = usage["total_tokens"]
+                .as_i64()
+                .unwrap_or(prompt_tokens + completion_tokens);
+
+            let chunk = serde_json::json!({
+                "id": response_id,
+                "object": "chat.completion.chunk",
+                "created": created_at,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": finish_reason,
+                    "native_finish_reason": finish_reason
+                }],
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens
+                }
+            });
+            Some(chunk.to_string())
+        }
+        _ => None,
+    }
 }

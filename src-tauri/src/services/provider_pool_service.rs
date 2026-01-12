@@ -279,12 +279,25 @@ impl ProviderPoolService {
             .into_iter()
             .filter(|c| {
                 let is_avail = c.is_available();
-                eprintln!(
-                    "[SELECT_CREDENTIAL] credential {} (type={}) is_available={}",
-                    c.name.as_deref().unwrap_or("unnamed"),
-                    c.provider_type,
-                    is_avail
-                );
+                if !is_avail {
+                    eprintln!(
+                        "[SELECT_CREDENTIAL] credential {} (type={}) is_available={} (is_healthy={}, is_disabled={}, error_count={}, last_error={:?})",
+                        c.name.as_deref().unwrap_or("unnamed"),
+                        c.provider_type,
+                        is_avail,
+                        c.is_healthy,
+                        c.is_disabled,
+                        c.error_count,
+                        c.last_error_message
+                    );
+                } else {
+                    eprintln!(
+                        "[SELECT_CREDENTIAL] credential {} (type={}) is_available={}",
+                        c.name.as_deref().unwrap_or("unnamed"),
+                        c.provider_type,
+                        is_avail
+                    );
+                }
                 is_avail
             })
             .collect();

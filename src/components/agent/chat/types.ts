@@ -144,7 +144,7 @@ export const PROVIDER_CONFIG: Record<
   },
   codex: {
     label: "Codex",
-    models: ["codex-mini-latest"],
+    models: [], // 从后端别名配置动态加载
   },
   claude_oauth: {
     label: "Claude OAuth",

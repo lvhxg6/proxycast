@@ -352,10 +352,19 @@ impl ModelService {
                 "claude-haiku-4-5".to_string(),
             ],
             PoolProviderType::Gemini => vec![
+                // Gemini 3 系列
+                "gemini-3-pro-preview".to_string(),
+                "gemini-3-flash-preview".to_string(),
+                // Gemini 2.5 系列
+                "gemini-2.5-pro".to_string(),
                 "gemini-2.5-flash".to_string(),
                 "gemini-2.5-flash-lite".to_string(),
-                "gemini-2.5-pro".to_string(),
-                "gemini-2.5-pro-preview-06-05".to_string(),
+                // Gemini 2.0 系列
+                "gemini-2.0-flash".to_string(),
+                "gemini-2.0-flash-lite".to_string(),
+                // Gemini 1.5 系列（已弃用但仍可用）
+                "gemini-1.5-pro".to_string(),
+                "gemini-1.5-flash".to_string(),
             ],
             PoolProviderType::Qwen => vec![
                 "qwen3-coder-plus".to_string(),

@@ -2,6 +2,7 @@
 //!
 //! 提供动态模型配置的 Tauri 命令
 
+use crate::commands::model_registry_cmd::ModelRegistryState;
 use crate::config::{save_config, ModelInfo, ModelsConfig, ProviderModelsConfig};
 use crate::AppState;
 use serde::{Deserialize, Serialize};
@@ -58,28 +59,89 @@ pub struct SimpleProviderConfig {
     pub models: Vec<String>,
 }
 
+/// 需要使用别名配置的 Provider 列表
+const ALIAS_PROVIDERS: &[&str] = &["antigravity", "kiro", "codex", "gemini", "gemini_api_key"];
+
+/// 别名配置文件名映射（某些 Provider 共享同一个别名配置）
+fn get_alias_config_key(provider: &str) -> &str {
+    match provider {
+        "gemini_api_key" => "gemini", // Gemini API Key 使用 gemini 的别名配置
+        _ => provider,
+    }
+}
+
 /// 获取所有 Provider 的简化配置（用于前端下拉框）
+/// 对于别名 Provider（antigravity、kiro、codex、gemini、gemini_api_key），优先使用别名配置中的模型列表
 #[tauri::command]
 pub async fn get_all_provider_models(
     app_state: State<'_, AppState>,
+    model_registry_state: State<'_, ModelRegistryState>,
 ) -> Result<HashMap<String, SimpleProviderConfig>, String> {
     let state = app_state.read().await;
+
+    // 获取别名配置
+    let alias_configs = {
+        let guard = model_registry_state.read().await;
+        if let Some(service) = guard.as_ref() {
+            let configs = service.get_all_alias_configs().await;
+            tracing::info!(
+                "[get_all_provider_models] 加载了 {} 个别名配置: {:?}",
+                configs.len(),
+                configs.keys().collect::<Vec<_>>()
+            );
+            configs
+        } else {
+            tracing::warn!("[get_all_provider_models] ModelRegistryService 未初始化");
+            HashMap::new()
+        }
+    };
+
     let result: HashMap<String, SimpleProviderConfig> = state
         .config
         .models
         .providers
         .iter()
         .map(|(key, value)| {
-            (
-                key.clone(),
-                SimpleProviderConfig {
-                    label: value.label.clone(),
-                    models: value
+            // 对于别名 Provider，优先使用别名配置中的模型列表
+            let models = if ALIAS_PROVIDERS.contains(&key.as_str()) {
+                // 使用映射获取实际的别名配置文件名
+                let alias_config_key = get_alias_config_key(key);
+                if let Some(alias_config) = alias_configs.get(alias_config_key) {
+                    tracing::info!(
+                        "[get_all_provider_models] {} 使用别名配置 {}: {:?}",
+                        key,
+                        alias_config_key,
+                        alias_config.models
+                    );
+                    alias_config.models.clone()
+                } else {
+                    tracing::warn!(
+                        "[get_all_provider_models] {} 没有找到别名配置 {}，使用用户配置",
+                        key,
+                        alias_config_key
+                    );
+                    // 降级到用户配置
+                    value
                         .models
                         .iter()
                         .filter(|m| m.enabled)
                         .map(|m| m.id.clone())
-                        .collect(),
+                        .collect()
+                }
+            } else {
+                value
+                    .models
+                    .iter()
+                    .filter(|m| m.enabled)
+                    .map(|m| m.id.clone())
+                    .collect()
+            };
+
+            (
+                key.clone(),
+                SimpleProviderConfig {
+                    label: value.label.clone(),
+                    models,
                 },
             )
         })

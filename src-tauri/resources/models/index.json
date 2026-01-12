@@ -5,6 +5,7 @@
     "abacus",
     "aihubmix",
     "alibaba",
+    "antigravity",
     "alibaba-cn",
     "amazon-bedrock",
     "anthropic",
@@ -16,6 +17,7 @@
     "chutes",
     "cloudflare-ai-gateway",
     "cloudflare-workers-ai",
+    "codex",
     "cohere",
     "cortecs",
     "deepinfra",
@@ -78,7 +80,7 @@
     "zhipuai",
     "zhipuai-coding-plan"
   ],
-  "total_models": 2028,
+  "total_models": 2039,
   "sources": {
     "models_dev": "https://models.dev/api.json",
     "manual": []

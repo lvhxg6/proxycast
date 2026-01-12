@@ -179,6 +179,8 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
     const loadConfig = async () => {
       try {
         const config = await getProviderConfig();
+        console.log("[useAgentChat] 加载模型配置成功:", config);
+        console.log("[useAgentChat] codex 模型列表:", config.codex?.models);
         setProviderConfig(config);
       } catch (error) {
         console.warn("加载模型配置失败，使用默认配置:", error);

@@ -15,11 +15,9 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { useProviderPool } from "@/hooks/useProviderPool";
-import { useApiKeyProvider } from "@/hooks/useApiKeyProvider";
-import { useModelRegistry } from "@/hooks/useModelRegistry";
-import { getProviderAliasConfig } from "@/lib/api/modelRegistry";
-import type { ProviderAliasConfig } from "@/lib/types/modelRegistry";
+import { useConfiguredProviders } from "@/hooks/useConfiguredProviders";
+import { useProviderModels } from "@/hooks/useProviderModels";
+import { isAliasProvider } from "@/lib/constants/providerMappings";
 
 // ============================================================================
 // 常量
@@ -28,11 +26,12 @@ import type { ProviderAliasConfig } from "@/lib/types/modelRegistry";
 /**
  * 从凭证类型提取支持的模型列表
  * 对应后端 orchestrator_cmd.rs 中的 extract_supported_models 函数
+ * 这是一个降级策略：优先使用凭证池中的模型列表
  */
 const extractSupportedModels = (
   providerType: string,
   credentialType: string,
-  providerId?: string, // 添加 providerId 参数用于特殊判断
+  providerId?: string,
 ): string[] => {
   const type = providerType.toLowerCase();
   const credType = credentialType.toLowerCase();
@@ -110,9 +109,9 @@ const extractSupportedModels = (
     ];
   }
 
-  // Codex OAuth 凭证
+  // Codex OAuth 凭证 - 从后端别名配置加载，这里返回空数组触发降级逻辑
   if (type === "codex") {
-    return ["codex-mini-latest"];
+    return [];
   }
 
   // Qwen OAuth 凭证
@@ -145,61 +144,9 @@ const extractSupportedModels = (
   return [];
 };
 
-/** Provider type 到 registry ID 的映射 */
-const getRegistryIdFromType = (providerType: string): string => {
-  const typeMap: Record<string, string> = {
-    openai: "openai",
-    anthropic: "anthropic",
-    gemini: "google",
-    kiro: "kiro",
-    claude: "anthropic",
-    claude_oauth: "anthropic",
-    qwen: "alibaba",
-    codex: "openai",
-    antigravity: "antigravity",
-    iflow: "iflowcn",
-    gemini_api_key: "google",
-  };
-  return typeMap[providerType.toLowerCase()] || providerType.toLowerCase();
-};
-
-/** 需要使用别名配置的 Provider */
-const ALIAS_PROVIDERS = ["antigravity", "kiro"];
-
-/** Provider 显示名称 */
-const getProviderLabel = (providerType: string): string => {
-  const labelMap: Record<string, string> = {
-    kiro: "Kiro",
-    gemini: "Gemini OAuth",
-    qwen: "通义千问",
-    antigravity: "Antigravity",
-    codex: "Codex",
-    claude_oauth: "Claude OAuth",
-    claude: "Claude",
-    openai: "OpenAI",
-    anthropic: "Anthropic",
-    gemini_api_key: "Gemini API Key",
-    iflow: "iFlow",
-  };
-  return (
-    labelMap[providerType.toLowerCase()] ||
-    providerType.charAt(0).toUpperCase() + providerType.slice(1)
-  );
-};
-
 // ============================================================================
 // 类型
 // ============================================================================
-
-interface ConfiguredProvider {
-  key: string;
-  label: string;
-  registryId: string;
-  fallbackRegistryId?: string;
-  type: string;
-  credentialType: string; // 添加凭证类型字段
-  providerId?: string; // 添加 providerId 字段用于特殊判断（如 DeepSeek）
-}
 
 interface TerminalAIModeSelectorProps {
   /** 当前 Provider ID */
@@ -226,142 +173,51 @@ export const TerminalAIModeSelector: React.FC<TerminalAIModeSelectorProps> = ({
   className,
 }) => {
   const [open, setOpen] = useState(false);
-  const [aliasConfig, setAliasConfig] = useState<ProviderAliasConfig | null>(
-    null,
-  );
 
-  // 获取凭证数据
-  const { overview: oauthCredentials } = useProviderPool();
-  const { providers: apiKeyProviders } = useApiKeyProvider();
-  const { models: registryModels } = useModelRegistry({ autoLoad: true });
-
-  // 计算已配置的 Provider 列表
-  const configuredProviders = useMemo(() => {
-    const providerMap = new Map<string, ConfiguredProvider>();
-
-    // OAuth 凭证
-    oauthCredentials.forEach((overview) => {
-      if (overview.credentials.length > 0) {
-        const key = overview.provider_type;
-        // 获取第一个凭证的类型作为代表
-        const firstCredential = overview.credentials[0];
-        const credentialType = firstCredential.credential_type || key;
-
-        if (!providerMap.has(key)) {
-          providerMap.set(key, {
-            key,
-            label: getProviderLabel(key),
-            registryId: getRegistryIdFromType(key),
-            type: key,
-            credentialType,
-          });
-        }
-      }
-    });
-
-    // API Key Provider
-    apiKeyProviders
-      .filter((p) => p.api_key_count > 0 && p.enabled)
-      .forEach((provider) => {
-        let key = provider.id;
-        let label = provider.name;
-
-        if (providerMap.has(key)) {
-          key = `${provider.id}_api_key`;
-          label = `${provider.name} API Key`;
-        }
-
-        if (!providerMap.has(key)) {
-          // 使用 provider.type 映射到 registryId，而不是 provider.id
-          const registryId = getRegistryIdFromType(provider.type);
-          providerMap.set(key, {
-            key,
-            label,
-            registryId,
-            fallbackRegistryId: registryId,
-            type: provider.type,
-            credentialType: `${provider.type}_key`, // API Key 类型
-            providerId: provider.id, // 保存原始 provider.id
-          });
-        }
-      });
-
-    return Array.from(providerMap.values());
-  }, [oauthCredentials, apiKeyProviders]);
+  // 获取已配置的 Provider 列表（使用共享 hook）
+  const { providers: configuredProviders } = useConfiguredProviders();
 
   // 当前选中的 Provider
   const selectedProvider = useMemo(() => {
     return configuredProviders.find((p) => p.key === providerId);
   }, [configuredProviders, providerId]);
 
-  // 加载别名配置
-  useEffect(() => {
-    if (selectedProvider && ALIAS_PROVIDERS.includes(selectedProvider.key)) {
-      getProviderAliasConfig(selectedProvider.key)
-        .then(setAliasConfig)
-        .catch(() => setAliasConfig(null));
-    } else {
-      setAliasConfig(null);
-    }
-  }, [selectedProvider]);
+  // 获取模型列表（使用共享 hook）
+  const { modelIds: hookModels, loading: modelsLoading } =
+    useProviderModels(selectedProvider);
 
   // 当前 Provider 的模型列表
+  // Terminal 有特殊的降级策略：优先使用 extractSupportedModels
   const currentModels = useMemo(() => {
     if (!selectedProvider) return [];
 
-    // 别名 Provider 使用别名配置
-    if (ALIAS_PROVIDERS.includes(selectedProvider.key) && aliasConfig) {
-      return aliasConfig.models;
+    // 别名 Provider 使用共享 hook 的结果
+    if (isAliasProvider(selectedProvider.key)) {
+      return hookModels;
     }
 
     // 优先使用凭证池中的模型列表（从后端 extract_supported_models 逻辑）
     const credentialModels = extractSupportedModels(
       selectedProvider.type,
-      selectedProvider.credentialType,
-      selectedProvider.providerId, // 传递 providerId
+      selectedProvider.credentialType || "",
+      selectedProvider.providerId,
     );
 
     if (credentialModels.length > 0) {
       return credentialModels;
     }
 
-    // 降级：从 model_registry 获取
-    let models = registryModels.filter(
-      (m) => m.provider_id === selectedProvider.registryId,
-    );
-
-    if (models.length === 0 && selectedProvider.fallbackRegistryId) {
-      models = registryModels.filter(
-        (m) => m.provider_id === selectedProvider.fallbackRegistryId,
-      );
-    }
-
-    // 排序：使用 release_date 和 is_latest 字段
-    const sortedModels = [...models].sort((a, b) => {
-      // 1. is_latest 优先
-      if (a.is_latest && !b.is_latest) return -1;
-      if (!a.is_latest && b.is_latest) return 1;
-
-      // 2. 按 release_date 降序（最新的在前）
-      if (a.release_date && b.release_date) {
-        return b.release_date.localeCompare(a.release_date);
-      }
-      if (a.release_date && !b.release_date) return -1;
-      if (!a.release_date && b.release_date) return 1;
-
-      // 3. 按 display_name 字母序
-      return a.display_name.localeCompare(b.display_name);
-    });
-
-    return sortedModels.map((m) => m.id);
-  }, [selectedProvider, registryModels, aliasConfig]);
+    // 降级：使用共享 hook 的结果
+    return hookModels;
+  }, [selectedProvider, hookModels]);
 
   // 自动选择第一个模型
   useEffect(() => {
+    // 等待模型加载完成
     if (
       selectedProvider &&
-      ALIAS_PROVIDERS.includes(selectedProvider.key) &&
-      !aliasConfig
+      isAliasProvider(selectedProvider.key) &&
+      modelsLoading
     ) {
       return;
     }
@@ -369,7 +225,7 @@ export const TerminalAIModeSelector: React.FC<TerminalAIModeSelectorProps> = ({
     if (currentModels.length > 0 && !currentModels.includes(modelId)) {
       onModelChange(currentModels[0]);
     }
-  }, [currentModels, modelId, onModelChange, selectedProvider, aliasConfig]);
+  }, [currentModels, modelId, onModelChange, selectedProvider, modelsLoading]);
 
   // 初始化 Provider
   useEffect(() => {

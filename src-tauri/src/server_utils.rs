@@ -606,6 +606,63 @@ pub fn build_anthropic_stream_response(model: &str, parsed: &CWParsedResponse) -
         })
 }
 
+/// 构建 Gemini CLI OAuth 请求体
+///
+/// 用于 Gemini OAuth 凭证（Cloud Code Assist API）
+/// 不做模型名称映射，直接使用用户传入的模型名称
+pub fn build_gemini_cli_request(
+    request: &serde_json::Value,
+    model: &str,
+    project_id: &str,
+) -> serde_json::Value {
+    // 是否启用思维链
+    let enable_thinking = model.ends_with("-thinking")
+        || model == "gemini-2.5-pro"
+        || model.starts_with("gemini-3-pro-");
+
+    // 构建内部请求
+    let mut inner_request = request.clone();
+
+    // 确保有 generationConfig
+    if inner_request.get("generationConfig").is_none() {
+        inner_request["generationConfig"] = serde_json::json!({
+            "temperature": 1.0,
+            "maxOutputTokens": 8096,
+            "topP": 0.85,
+            "topK": 50,
+            "candidateCount": 1,
+            "thinkingConfig": {
+                "includeThoughts": enable_thinking,
+                "thinkingBudget": if enable_thinking { 1024 } else { 0 }
+            }
+        });
+    } else {
+        // 确保有 thinkingConfig
+        if inner_request["generationConfig"]
+            .get("thinkingConfig")
+            .is_none()
+        {
+            inner_request["generationConfig"]["thinkingConfig"] = serde_json::json!({
+                "includeThoughts": enable_thinking,
+                "thinkingBudget": if enable_thinking { 1024 } else { 0 }
+            });
+        }
+    }
+
+    // 删除安全设置（Cloud Code Assist 不支持）
+    if let Some(obj) = inner_request.as_object_mut() {
+        obj.remove("safetySettings");
+    }
+
+    // 构建完整的 Gemini CLI 请求体
+    // 格式与 CLIProxyAPI 对齐
+    serde_json::json!({
+        "project": project_id,
+        "model": model,  // 直接使用模型名称，不做映射
+        "request": inner_request
+    })
+}
+
 /// 构建 Gemini 原生请求体
 ///
 /// 将用户传入的 Gemini 格式请求转换为 Antigravity 请求格式

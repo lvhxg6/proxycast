@@ -24,13 +24,20 @@ const CREDENTIALS_FILE: &str = "oauth_creds.json";
 // OAuth 端点
 const GEMINI_TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 
-// OAuth 凭证从环境变量读取
+// Gemini CLI OAuth 配置 - 与 CLIProxyAPI 对齐
+const DEFAULT_GEMINI_OAUTH_CLIENT_ID: &str =
+    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com";
+const DEFAULT_GEMINI_OAUTH_CLIENT_SECRET: &str = "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";
+
+// OAuth 凭证 - 优先从环境变量读取，否则使用硬编码的默认值
 fn get_oauth_client_id() -> String {
-    std::env::var("GEMINI_OAUTH_CLIENT_ID").unwrap_or_default()
+    std::env::var("GEMINI_OAUTH_CLIENT_ID")
+        .unwrap_or_else(|_| DEFAULT_GEMINI_OAUTH_CLIENT_ID.to_string())
 }
 
 fn get_oauth_client_secret() -> String {
-    std::env::var("GEMINI_OAUTH_CLIENT_SECRET").unwrap_or_default()
+    std::env::var("GEMINI_OAUTH_CLIENT_SECRET")
+        .unwrap_or_else(|_| DEFAULT_GEMINI_OAUTH_CLIENT_SECRET.to_string())
 }
 
 #[allow(dead_code)]

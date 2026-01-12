@@ -24,11 +24,7 @@ export {
 export { replaceTextInDOM } from "./dom-replacer";
 
 // Text map and language types
-export {
-  getTextMap,
-  type Language,
-  isValidLanguage,
-} from "./text-map";
+export { getTextMap, type Language, isValidLanguage } from "./text-map";
 
 // withI18nPatch HOC (for class components)
 export { withI18nPatch } from "./withI18nPatch";

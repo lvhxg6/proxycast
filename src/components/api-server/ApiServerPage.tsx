@@ -36,6 +36,7 @@ import {
 import {
   getModelRegistry,
   getModelsForProvider,
+  getProviderAliasConfig,
 } from "@/lib/api/modelRegistry";
 import type { EnhancedModelMetadata } from "@/lib/types/modelRegistry";
 
@@ -93,11 +94,43 @@ const getProviderApiType = (provider: string): ApiType => {
   return "openai";
 };
 
+// 需要使用别名配置的 Provider 列表
+const ALIAS_PROVIDERS = [
+  "antigravity",
+  "kiro",
+  "codex",
+  "gemini",
+  "gemini_api_key",
+];
+
+// 别名配置文件名映射（某些 Provider 共享同一个别名配置）
+const ALIAS_CONFIG_MAPPING: Record<string, string> = {
+  gemini_api_key: "gemini",
+};
+
 // 根据 API 类型获取对应的模型 provider_id 列表
-const getModelProviderIds = (apiType: ApiType): string[] => {
+const getModelProviderIds = (apiType: ApiType, provider?: string): string[] => {
+  // Antigravity 使用自己的模型列表（别名配置）
+  if (provider?.toLowerCase() === "antigravity") {
+    return ["antigravity"];
+  }
+
+  // Codex 使用自己的模型列表（别名配置）
+  if (provider?.toLowerCase() === "codex") {
+    return ["codex"];
+  }
+
+  // Gemini 使用别名配置
+  if (
+    provider?.toLowerCase() === "gemini" ||
+    provider?.toLowerCase() === "gemini_api_key"
+  ) {
+    return ["gemini"];
+  }
+
   switch (apiType) {
     case "gemini":
-      return ["google"];
+      return ["gemini"]; // 使用别名配置
     case "anthropic":
       return ["anthropic"];
     case "openai":
@@ -217,31 +250,84 @@ export function ApiServerPage() {
       let models: EnhancedModelMetadata[];
 
       if (provider) {
-        // 首先检查是否是自定义 API Key Provider
-        // 如果是，使用其 type 字段来确定 API 类型
-        let effectiveProvider = provider;
-        if (providers) {
-          const customProvider = providers.find((p) => p.id === provider);
-          if (customProvider) {
-            // 使用自定义 Provider 的 type 字段
-            effectiveProvider = customProvider.type;
+        // 检查是否是别名 Provider
+        const providerLower = provider.toLowerCase();
+        if (ALIAS_PROVIDERS.includes(providerLower)) {
+          // 使用别名配置
+          const aliasConfigKey =
+            ALIAS_CONFIG_MAPPING[providerLower] || providerLower;
+          const aliasConfig = await getProviderAliasConfig(aliasConfigKey);
+
+          if (aliasConfig && aliasConfig.models.length > 0) {
+            // 将别名配置中的模型转换为 EnhancedModelMetadata 格式
+            models = aliasConfig.models.map(
+              (modelName): EnhancedModelMetadata => {
+                const aliasInfo = aliasConfig.aliases[modelName];
+                return {
+                  id: modelName,
+                  display_name: modelName,
+                  provider_id: providerLower,
+                  provider_name: provider,
+                  family: aliasInfo?.provider || null,
+                  tier: "pro" as const,
+                  capabilities: {
+                    vision: false,
+                    tools: true,
+                    streaming: true,
+                    json_mode: true,
+                    function_calling: true,
+                    reasoning: modelName.includes("thinking"),
+                  },
+                  pricing: null,
+                  limits: {
+                    context_length: null,
+                    max_output_tokens: null,
+                    requests_per_minute: null,
+                    tokens_per_minute: null,
+                  },
+                  status: "active" as const,
+                  release_date: null,
+                  is_latest: false,
+                  description:
+                    aliasInfo?.description ||
+                    `${aliasInfo?.actual || modelName}`,
+                  source: "custom" as const,
+                  created_at: Date.now() / 1000,
+                  updated_at: Date.now() / 1000,
+                };
+              },
+            );
+          } else {
+            models = [];
           }
-        }
-
-        // 根据 Provider 的 API 类型过滤模型
-        const apiType = getProviderApiType(effectiveProvider);
-        const providerIds = getModelProviderIds(apiType);
-
-        if (providerIds.length > 0) {
-          // 获取所有匹配 provider_id 的模型
-          const modelPromises = providerIds.map((id) =>
-            getModelsForProvider(id),
-          );
-          const modelArrays = await Promise.all(modelPromises);
-          models = modelArrays.flat();
         } else {
-          // 未知类型，显示所有模型
-          models = await getModelRegistry();
+          // 非别名 Provider，使用模型注册表
+          // 首先检查是否是自定义 API Key Provider
+          // 如果是，使用其 type 字段来确定 API 类型
+          let effectiveProvider = provider;
+          if (providers) {
+            const customProvider = providers.find((p) => p.id === provider);
+            if (customProvider) {
+              // 使用自定义 Provider 的 type 字段
+              effectiveProvider = customProvider.type;
+            }
+          }
+
+          // 根据 Provider 的 API 类型过滤模型
+          const apiType = getProviderApiType(effectiveProvider);
+          const providerIds = getModelProviderIds(apiType, provider);
+
+          if (providerIds.length > 0) {
+            // 获取所有匹配 provider_id 的模型
+            const modelPromises = providerIds.map((id) =>
+              getModelsForProvider(id),
+            );
+            const modelArrays = await Promise.all(modelPromises);
+            models = modelArrays.flat();
+          } else {
+            // 未知类型，显示所有模型
+            models = await getModelRegistry();
+          }
         }
       } else {
         models = await getModelRegistry();
@@ -490,10 +576,14 @@ export function ApiServerPage() {
       }
     });
 
-    // 转换为数组并按凭证数量排序
-    const providers = Array.from(providerMap.values()).sort(
-      (a, b) => b.totalCount - a.totalCount,
-    );
+    // 转换为数组并按凭证数量排序，Qwen 排到最后
+    const providers = Array.from(providerMap.values()).sort((a, b) => {
+      // Qwen 排到最后
+      if (a.id === "qwen" && b.id !== "qwen") return 1;
+      if (b.id === "qwen" && a.id !== "qwen") return -1;
+      // 其他按凭证数量排序
+      return b.totalCount - a.totalCount;
+    });
     setAvailableProviders(providers);
   };
 
