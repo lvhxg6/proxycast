@@ -1,6 +1,6 @@
 [package]
 name = "proxycast"
-version = "0.41.0"
+version = "0.46.0"
 description = "AI API Proxy Desktop App"
 authors = ["you"]
 edition = "2021"
@@ -28,8 +28,8 @@ axum = { version = "0.7", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls"] }
 rustls-pemfile = "2"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["limit"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+tower-http = { version = "0.5", features = ["limit", "cors"] }
+reqwest = { version = "0.12", features = ["json", "stream", "gzip", "brotli", "deflate"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
@@ -77,6 +77,10 @@ mouse_position = "0.1.4"
 window-vibrancy = "0.7.1"
 if-addrs = "0.13"
 
+# Aster Agent Framework
+# 使用本地路径进行开发，后续切换到 git
+aster = { path = "../../../astercloud/aster-rust/crates/aster" }
+
 # Platform specific dependencies for browser interceptor
 
 # Windows specific dependencies for browser interceptor and machine ID management
@@ -117,3 +121,4 @@ tempfile = "3"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+notification = []  # 预留特性：系统通知功能

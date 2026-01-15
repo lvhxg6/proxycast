@@ -25,8 +25,9 @@ use crate::providers::kiro::KiroProvider;
 use crate::providers::openai_custom::OpenAICustomProvider;
 use crate::providers::qwen::QwenProvider;
 use crate::server_utils::{
-    build_anthropic_response, build_anthropic_stream_response, build_gemini_native_request, health,
-    models, parse_cw_response,
+    build_anthropic_response, build_anthropic_stream_response, build_error_response,
+    build_error_response_with_status, build_gemini_cli_request, build_gemini_native_request,
+    health, models, parse_cw_response,
 };
 use crate::services::kiro_event_service::KiroEventService;
 use crate::services::provider_pool_service::ProviderPoolService;
@@ -171,6 +172,8 @@ pub struct ServerState {
     /// 服务器运行时使用的 API key（启动时从配置复制）
     /// 用于 test_api 命令，确保测试使用的 API key 和服务器一致
     pub running_api_key: Option<String>,
+    /// 服务器实际监听的 host（可能与配置不同，因为会自动切换到有效的 IP）
+    pub running_host: Option<String>,
 }
 
 impl ServerState {
@@ -196,13 +199,18 @@ impl ServerState {
             router_ref: None,
             shutdown_tx: None,
             running_api_key: None,
+            running_host: None,
         }
     }
 
     pub fn status(&self) -> ServerStatus {
         ServerStatus {
             running: self.running,
-            host: self.config.server.host.clone(),
+            // 使用实际运行的 host，如果没有则使用配置的 host
+            host: self
+                .running_host
+                .clone()
+                .unwrap_or_else(|| self.config.server.host.clone()),
             port: self.config.server.port,
             requests: self.requests,
             uptime_secs: self.start_time.map(|t| t.elapsed().as_secs()).unwrap_or(0),
@@ -212,6 +220,15 @@ impl ServerState {
     /// 增加请求计数
     pub fn increment_request_count(&mut self) {
         self.requests = self.requests.saturating_add(1);
+    }
+
+    /// 解析绑定地址
+    ///
+    /// 直接返回用户配置的地址，不做任何自动替换。
+    /// 如果地址无效，绑定时会失败并返回错误。
+    fn resolve_bind_host(&self, configured_host: &str) -> String {
+        tracing::info!("[SERVER] 使用配置的监听地址: {}", configured_host);
+        configured_host.to_string()
     }
 
     pub async fn start(
@@ -277,7 +294,21 @@ impl ServerState {
         let (tx, rx) = oneshot::channel();
         self.shutdown_tx = Some(tx);
 
-        let host = self.config.server.host.clone();
+        // 智能选择监听地址
+        // - 127.0.0.1, localhost, 0.0.0.0, :: 直接使用
+        // - 局域网 IP：检查是否在当前网卡列表中，如果不在则自动切换到当前局域网 IP
+        let configured_host = self.config.server.host.clone();
+        let host = self.resolve_bind_host(&configured_host);
+
+        // 如果地址发生了变化，记录日志
+        if host != configured_host {
+            tracing::warn!(
+                "[SERVER] 配置的监听地址 {} 不可用，自动切换到 {}",
+                configured_host,
+                host
+            );
+        }
+
         let port = self.config.server.port;
         let api_key = self.config.server.api_key.clone();
         let api_key_for_state = api_key.clone(); // 用于保存到 running_api_key
@@ -346,6 +377,9 @@ impl ServerState {
         // 保存 router_ref 以便后续动态更新
         self.router_ref = Some(processor.router.clone());
 
+        // 保存实际使用的 host（在移动到 spawn 之前克隆）
+        let running_host = host.clone();
+
         tokio::spawn(async move {
             if let Err(e) = run_server(
                 &host,
@@ -379,6 +413,8 @@ impl ServerState {
         self.start_time = Some(std::time::Instant::now());
         // 保存服务器运行时使用的 API key，用于 test_api 命令
         self.running_api_key = Some(api_key_for_state);
+        // 保存服务器实际监听的 host（可能与配置不同）
+        self.running_host = Some(running_host);
         Ok(())
     }
 
@@ -389,6 +425,7 @@ impl ServerState {
         self.running = false;
         self.start_time = None;
         self.running_api_key = None;
+        self.running_host = None;
         self.router_ref = None;
     }
 }
@@ -866,6 +903,28 @@ async fn run_server(
         api_key_service,
     };
 
+    // ========== 开发模式：启动独立的 HTTP 桥接服务器 ==========
+    // 仅在 debug 模式下，启动一个独立的开发服务器在端口 3030
+    // 允许浏览器 dev server 通过 HTTP 调用 Tauri 命令
+    #[cfg(debug_assertions)]
+    {
+        eprintln!("[DevBridge] ===== 准备启动开发桥接服务器 =====");
+        use tokio::sync::RwLock as TokioRwLock;
+        let dev_bridge_state = Arc::new(TokioRwLock::new(state.clone()));
+        eprintln!("[DevBridge] 状态已克隆，准备启动");
+        tokio::spawn(async move {
+            eprintln!("[DevBridge] spawn 任务开始执行");
+            match crate::dev_bridge::DevBridgeServer::start(dev_bridge_state, None).await {
+                Ok(_) => {
+                    eprintln!("[DevBridge] 启动完成");
+                }
+                Err(e) => {
+                    eprintln!("[DevBridge] 启动失败: {}", e);
+                }
+            }
+        });
+    }
+
     // 启动配置文件监控
     let _file_watcher = if let Some(path) = config_path {
         start_config_watcher(
@@ -989,8 +1048,16 @@ async fn run_server(
         .layer(DefaultBodyLimit::max(body_limit))
         .with_state(state);
 
-    let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let addr: std::net::SocketAddr = format!("{host}:{port}")
+        .parse()
+        .map_err(|e| format!("无效的监听地址 {}:{} - {}", host, port, e))?;
+
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        format!(
+            "无法绑定到 {}:{}，错误: {}。请检查地址是否有效或端口是否被占用。",
+            host, port, e
+        )
+    })?;
 
     tracing::info!("Server listening on {}", addr);
 
@@ -1253,22 +1320,142 @@ async fn gemini_generate_content(
                     // 直接返回 Gemini 格式响应
                     Json(resp).into_response()
                 }
-                Err(e) => {
+                Err(api_err) => {
+                    state.logs.write().await.add(
+                        "error",
+                        &format!(
+                            "[GEMINI] 请求失败 (HTTP {}): {}",
+                            api_err.status_code, api_err.message
+                        ),
+                    );
+
+                    // 直接使用 AntigravityApiError 的状态码构建响应
+                    build_error_response_with_status(api_err.status_code, &api_err.to_string())
+                }
+            }
+        }
+        CredentialData::GeminiOAuth {
+            creds_file_path,
+            project_id,
+        } => {
+            // 使用 GeminiProvider 处理 Gemini CLI OAuth 凭证
+            let mut gemini = GeminiProvider::new();
+            if let Err(e) = gemini.load_credentials_from_path(creds_file_path).await {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": format!("加载 Gemini 凭证失败: {}", e)
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+
+            // 检查并刷新 Token
+            if !gemini.is_token_valid() {
+                tracing::info!("[Gemini CLI] Token 需要刷新，开始刷新...");
+                match gemini.refresh_token_with_retry(3).await {
+                    Ok(new_token) => {
+                        tracing::info!(
+                            "[Gemini CLI] Token 刷新成功，新 token 长度: {}",
+                            new_token.len()
+                        );
+                    }
+                    Err(refresh_error) => {
+                        tracing::error!("[Gemini CLI] Token 刷新失败: {:?}", refresh_error);
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(serde_json::json!({
+                                "error": {
+                                    "message": format!("Token 刷新失败: {}", refresh_error)
+                                }
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            // 设置项目 ID
+            if let Some(pid) = project_id {
+                gemini.project_id = Some(pid.clone());
+            } else if gemini.project_id.is_none() {
+                // 尝试从 API 获取项目 ID
+                if let Err(e) = gemini.discover_project().await {
+                    tracing::warn!("[Gemini CLI] 获取项目 ID 失败: {}，使用随机生成的 ID", e);
+                    let uuid = uuid::Uuid::new_v4();
+                    let bytes = uuid.as_bytes();
+                    let adjectives = ["useful", "bright", "swift", "calm", "bold"];
+                    let nouns = ["fuze", "wave", "spark", "flow", "core"];
+                    let adj = adjectives[(bytes[0] as usize) % adjectives.len()];
+                    let noun = nouns[(bytes[1] as usize) % nouns.len()];
+                    let random_part: String = uuid.to_string()[..5].to_lowercase();
+                    gemini.project_id = Some(format!("{}-{}-{}", adj, noun, random_part));
+                }
+            }
+
+            let proj_id = gemini.project_id.clone().unwrap_or_else(|| {
+                let uuid = uuid::Uuid::new_v4();
+                format!("proxycast-{}", &uuid.to_string()[..8])
+            });
+
+            state.logs.write().await.add(
+                "debug",
+                &format!("[GEMINI CLI] 使用 project_id: {}", proj_id),
+            );
+
+            // 构建 Gemini CLI 请求体
+            // Gemini CLI 使用 Cloud Code Assist 端点，不做模型名称映射
+            let gemini_request = build_gemini_cli_request(&request, model, &proj_id);
+
+            state.logs.write().await.add(
+                "debug",
+                &format!(
+                    "[GEMINI CLI] 请求体: {}",
+                    serde_json::to_string(&gemini_request).unwrap_or_default()
+                ),
+            );
+
+            if is_stream {
+                // 流式响应 - 暂不支持
+                return (
+                    StatusCode::NOT_IMPLEMENTED,
+                    Json(serde_json::json!({
+                        "error": {
+                            "message": "Gemini CLI 流式响应暂不支持，请使用 generateContent"
+                        }
+                    })),
+                )
+                    .into_response();
+            }
+
+            // 非流式响应
+            match gemini.call_api("generateContent", &gemini_request).await {
+                Ok(resp) => {
+                    state.logs.write().await.add(
+                        "info",
+                        &format!(
+                            "[GEMINI CLI] 响应成功: {}",
+                            serde_json::to_string(&resp)
+                                .unwrap_or_default()
+                                .chars()
+                                .take(200)
+                                .collect::<String>()
+                        ),
+                    );
+
+                    // 直接返回 Gemini 格式响应
+                    Json(resp).into_response()
+                }
+                Err(api_err) => {
                     state
                         .logs
                         .write()
                         .await
-                        .add("error", &format!("[GEMINI] 请求失败: {}", e));
+                        .add("error", &format!("[GEMINI CLI] 请求失败: {}", api_err));
 
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({
-                            "error": {
-                                "message": e.to_string()
-                            }
-                        })),
-                    )
-                        .into_response()
+                    build_error_response(&api_err.to_string())
                 }
             }
         }
@@ -1276,7 +1463,7 @@ async fn gemini_generate_content(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": {
-                    "message": "Gemini 原生协议只支持 Antigravity 凭证"
+                    "message": "Gemini 原生协议只支持 Antigravity 或 Gemini CLI OAuth 凭证"
                 }
             })),
         )
@@ -1286,10 +1473,55 @@ async fn gemini_generate_content(
 
 /// 列出所有可用路由
 async fn list_routes(State(state): State<AppState>) -> impl IntoResponse {
+    // 处理 base_url：检查 IP 是否有效（在当前网卡列表中或是特殊地址）
+    let display_base_url = {
+        // 从 base_url 中提取 host 部分
+        let url_parts: Vec<&str> = state.base_url.split("://").collect();
+        let host_port = if url_parts.len() > 1 {
+            url_parts[1]
+        } else {
+            &state.base_url
+        };
+        let host = host_port.split(':').next().unwrap_or("localhost");
+
+        // 检查是否需要替换 IP
+        let should_replace = if host == "0.0.0.0" || host == "127.0.0.1" || host == "localhost" {
+            // 0.0.0.0 需要替换为局域网 IP，127.0.0.1 和 localhost 保持不变
+            host == "0.0.0.0"
+        } else {
+            // 检查 IP 是否在当前网卡列表中
+            if let Ok(network_info) = crate::commands::network_cmd::get_network_info() {
+                !network_info.all_ips.contains(&host.to_string())
+            } else {
+                false
+            }
+        };
+
+        if should_replace {
+            // 获取局域网 IP 进行替换
+            // 优先选择 192.168.x.x 或 10.x.x.x 开头的 IP（真正的局域网 IP）
+            if let Ok(network_info) = crate::commands::network_cmd::get_network_info() {
+                let new_ip = network_info
+                    .all_ips
+                    .iter()
+                    .find(|ip| ip.starts_with("192.168.") || ip.starts_with("10."))
+                    .or_else(|| network_info.lan_ip.as_ref())
+                    .or_else(|| network_info.all_ips.first())
+                    .cloned()
+                    .unwrap_or_else(|| "localhost".to_string());
+                state.base_url.replace(host, &new_ip)
+            } else {
+                state.base_url.replace(host, "localhost")
+            }
+        } else {
+            state.base_url.clone()
+        }
+    };
+
     let routes = match &state.db {
         Some(db) => state
             .pool_service
-            .get_available_routes(db, &state.base_url)
+            .get_available_routes(db, &display_base_url)
             .unwrap_or_default(),
         None => Vec::new(),
     };
@@ -1306,12 +1538,12 @@ async fn list_routes(State(state): State<AppState>) -> impl IntoResponse {
             crate::models::route_model::RouteEndpoint {
                 path: "/v1/messages".to_string(),
                 protocol: "claude".to_string(),
-                url: format!("{}/v1/messages", state.base_url),
+                url: format!("{}/v1/messages", display_base_url),
             },
             crate::models::route_model::RouteEndpoint {
                 path: "/v1/chat/completions".to_string(),
                 protocol: "openai".to_string(),
-                url: format!("{}/v1/chat/completions", state.base_url),
+                url: format!("{}/v1/chat/completions", display_base_url),
             },
         ],
         tags: vec!["默认".to_string()],
@@ -1320,7 +1552,7 @@ async fn list_routes(State(state): State<AppState>) -> impl IntoResponse {
     all_routes.extend(routes);
 
     let response = RouteListResponse {
-        base_url: state.base_url.clone(),
+        base_url: display_base_url,
         default_provider,
         routes: all_routes,
     };

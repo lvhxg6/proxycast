@@ -31,6 +31,8 @@ struct ToolCallDelta {
 pub struct OpenAISSEParser {
     /// 累积的完整内容
     full_content: String,
+    /// 累积的推理内容（DeepSeek R1 等模型）
+    reasoning_content: String,
     /// 当前正在构建的工具调用索引
     current_tool_indices: HashMap<usize, ToolCallDelta>,
 }
@@ -102,6 +104,15 @@ impl OpenAISSEParser {
                 self.full_content.push_str(s);
                 s.to_string()
             });
+
+        // 提取推理内容（DeepSeek R1 等模型）
+        if let Some(reasoning) = delta
+            .get("reasoning_content")
+            .and_then(|c| c.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            self.reasoning_content.push_str(reasoning);
+        }
 
         // 提取工具调用
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|tc| tc.as_array()) {
@@ -179,6 +190,15 @@ impl OpenAISSEParser {
     /// 获取完整内容
     pub fn get_full_content(&self) -> String {
         self.full_content.clone()
+    }
+
+    /// 获取推理内容（DeepSeek R1 等模型）
+    pub fn get_reasoning_content(&self) -> Option<String> {
+        if self.reasoning_content.is_empty() {
+            None
+        } else {
+            Some(self.reasoning_content.clone())
+        }
     }
 
     /// 是否有工具调用

@@ -3,6 +3,8 @@ export { useConfigEvents } from "./useConfigEvents";
 export { useOAuthPlugins, useSingleOAuthPlugin } from "./useOAuthPlugins";
 export { useDeepLink } from "./useDeepLink";
 export { useModelRegistry } from "./useModelRegistry";
+export { useSound } from "./useSound";
+export type { UseSoundReturn } from "./useSound";
 export type {
   ConnectPayload,
   RelayInfo,

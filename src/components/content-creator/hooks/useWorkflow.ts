@@ -15,6 +15,181 @@ import {
 } from "../types";
 
 /**
+ * 获取音乐创作工作流步骤
+ * 参考 Musicify MVP 的步骤设计
+ */
+function getMusicWorkflowSteps(mode: CreationMode): StepDefinition[] {
+  // 快速模式：3 步骤（明确需求 → 生成歌词 → 导出）
+  if (mode === "fast") {
+    return [
+      {
+        id: "spec",
+        type: "clarify",
+        title: "明确需求",
+        description: "定义歌曲主题、风格和情感",
+        aiTask: { taskType: "spec", streaming: true },
+        behavior: { skippable: false, redoable: true, autoAdvance: true },
+      },
+      {
+        id: "lyrics",
+        type: "write",
+        title: "生成歌词",
+        description: "AI 生成完整歌词",
+        aiTask: { taskType: "lyrics", streaming: true },
+        behavior: { skippable: false, redoable: true, autoAdvance: false },
+      },
+      {
+        id: "export",
+        type: "adapt",
+        title: "导出",
+        description: "导出到 Suno/Udio 等平台",
+        aiTask: { taskType: "export", streaming: true },
+        behavior: { skippable: true, redoable: true, autoAdvance: false },
+      },
+    ];
+  }
+
+  // 引导模式：完整 7 步骤
+  return [
+    {
+      id: "spec",
+      type: "clarify",
+      title: "歌曲规格",
+      description: "定义歌曲类型、时长、风格",
+      aiTask: { taskType: "spec", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: true },
+    },
+    {
+      id: "theme",
+      type: "research",
+      title: "主题构思",
+      description: "引导思考核心主题和故事",
+      aiTask: { taskType: "theme", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "mood",
+      type: "research",
+      title: "情绪定位",
+      description: "确定情绪氛围（温暖/激昂/治愈等）",
+      aiTask: { taskType: "mood", streaming: true },
+      behavior: { skippable: true, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "structure",
+      type: "outline",
+      title: "结构设计",
+      description: "设计歌曲结构（主歌/副歌/桥段）",
+      aiTask: { taskType: "structure", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "lyrics",
+      type: "write",
+      title: "歌词创作",
+      description: "创作完整歌词",
+      aiTask: { taskType: "lyrics", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "polish",
+      type: "polish",
+      title: "润色优化",
+      description: "押韵检查和歌词润色",
+      aiTask: { taskType: "polish", streaming: true },
+      behavior: { skippable: true, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "export",
+      type: "adapt",
+      title: "导出",
+      description: "导出到 Suno/Udio 等平台",
+      aiTask: { taskType: "export", streaming: true },
+      behavior: { skippable: true, redoable: true, autoAdvance: false },
+    },
+  ];
+}
+
+/**
+ * 获取海报创作工作流步骤
+ */
+function getPosterWorkflowSteps(mode: CreationMode): StepDefinition[] {
+  // 快速模式：3 步骤（明确需求 → 生成设计 → 导出）
+  if (mode === "fast") {
+    return [
+      {
+        id: "brief",
+        type: "clarify",
+        title: "明确需求",
+        description: "定义海报主题、尺寸和风格",
+        aiTask: { taskType: "brief", streaming: true },
+        behavior: { skippable: false, redoable: true, autoAdvance: true },
+      },
+      {
+        id: "design",
+        type: "write",
+        title: "生成设计",
+        description: "AI 生成海报设计方案",
+        aiTask: { taskType: "design", streaming: true },
+        behavior: { skippable: false, redoable: true, autoAdvance: false },
+      },
+      {
+        id: "export",
+        type: "adapt",
+        title: "导出",
+        description: "导出为图片或 PDF",
+        aiTask: { taskType: "export", streaming: true },
+        behavior: { skippable: true, redoable: true, autoAdvance: false },
+      },
+    ];
+  }
+
+  // 引导模式：5 步骤
+  return [
+    {
+      id: "brief",
+      type: "clarify",
+      title: "需求分析",
+      description: "明确海报目的、受众和场景",
+      aiTask: { taskType: "brief", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: true },
+    },
+    {
+      id: "copywriting",
+      type: "research",
+      title: "文案策划",
+      description: "撰写海报标题和文案",
+      aiTask: { taskType: "copywriting", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "layout",
+      type: "outline",
+      title: "布局设计",
+      description: "规划视觉层次和元素布局",
+      aiTask: { taskType: "layout", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "design",
+      type: "write",
+      title: "视觉设计",
+      description: "生成完整海报设计",
+      aiTask: { taskType: "design", streaming: true },
+      behavior: { skippable: false, redoable: true, autoAdvance: false },
+    },
+    {
+      id: "export",
+      type: "adapt",
+      title: "导出",
+      description: "导出为图片或 PDF",
+      aiTask: { taskType: "export", streaming: true },
+      behavior: { skippable: true, redoable: true, autoAdvance: false },
+    },
+  ];
+}
+
+/**
  * 获取主题对应的工作流步骤
  */
 function getWorkflowSteps(
@@ -24,6 +199,16 @@ function getWorkflowSteps(
   // 通用对话不需要工作流
   if (theme === "general") {
     return [];
+  }
+
+  // 音乐主题：使用专门的音乐创作步骤
+  if (theme === "music") {
+    return getMusicWorkflowSteps(mode);
+  }
+
+  // 海报主题：使用专门的海报创作步骤
+  if (theme === "poster") {
+    return getPosterWorkflowSteps(mode);
   }
 
   // 快速模式：简化步骤（收集需求 → 生成初稿 → 迭代修改）
@@ -259,28 +444,35 @@ export function useWorkflow(theme: ThemeType, mode: CreationMode) {
    */
   const completeStep = useCallback(
     (result: StepResult) => {
-      setSteps((prev) =>
-        prev.map((step, i) =>
-          i === currentStepIndex
-            ? { ...step, status: "completed" as StepStatus, result }
-            : step,
-        ),
-      );
-
-      // 自动进入下一步
-      const nextIndex = currentStepIndex + 1;
-      if (nextIndex < steps.length) {
-        setCurrentStepIndex(nextIndex);
+      // 使用函数式更新来获取最新的状态
+      // 这样即使 AI 快速连续生成多个文件，也能正确推进步骤
+      setCurrentStepIndex((prevIndex) => {
+        // 标记当前步骤为完成
         setSteps((prev) =>
           prev.map((step, i) =>
-            i === nextIndex
-              ? { ...step, status: "active" as StepStatus }
+            i === prevIndex
+              ? { ...step, status: "completed" as StepStatus, result }
               : step,
           ),
         );
-      }
+
+        // 计算下一步索引
+        const nextIndex = prevIndex + 1;
+        if (nextIndex < steps.length) {
+          // 激活下一步
+          setSteps((prev) =>
+            prev.map((step, i) =>
+              i === nextIndex
+                ? { ...step, status: "active" as StepStatus }
+                : step,
+            ),
+          );
+          return nextIndex;
+        }
+        return prevIndex;
+      });
     },
-    [currentStepIndex, steps.length],
+    [steps.length],
   );
 
   /**

@@ -21,3 +21,6 @@ pub use types::{
     NoopProgressCallback, PackageFormat, ProgressCallback,
 };
 pub use validator::PackageValidator;
+
+#[cfg(test)]
+mod tests;

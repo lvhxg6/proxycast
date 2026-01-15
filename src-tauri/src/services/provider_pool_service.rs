@@ -279,12 +279,25 @@ impl ProviderPoolService {
             .into_iter()
             .filter(|c| {
                 let is_avail = c.is_available();
-                eprintln!(
-                    "[SELECT_CREDENTIAL] credential {} (type={}) is_available={}",
-                    c.name.as_deref().unwrap_or("unnamed"),
-                    c.provider_type,
-                    is_avail
-                );
+                if !is_avail {
+                    eprintln!(
+                        "[SELECT_CREDENTIAL] credential {} (type={}) is_available={} (is_healthy={}, is_disabled={}, error_count={}, last_error={:?})",
+                        c.name.as_deref().unwrap_or("unnamed"),
+                        c.provider_type,
+                        is_avail,
+                        c.is_healthy,
+                        c.is_disabled,
+                        c.error_count,
+                        c.last_error_message
+                    );
+                } else {
+                    eprintln!(
+                        "[SELECT_CREDENTIAL] credential {} (type={}) is_available={}",
+                        c.name.as_deref().unwrap_or("unnamed"),
+                        c.provider_type,
+                        is_avail
+                    );
+                }
                 is_avail
             })
             .collect();
@@ -1424,65 +1437,75 @@ impl ProviderPoolService {
                     .filter(|s| !s.is_empty())
             });
 
-        match base_url {
-            Some(base) => {
-                // 使用自定义 base_url (如 Yunyi)，与 CodexProvider 的 URL/headers 行为保持一致
-                let url = CodexProvider::build_responses_url(base);
+        // 检查是否使用 API Key 模式（如果有 api_key 且没有 refresh_token/access_token）
+        let is_api_key_mode = provider
+            .credentials
+            .api_key
+            .as_deref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+            && provider.credentials.refresh_token.is_none();
 
-                // Codex/Yunyi 使用 responses API 格式；云驿等代理要求 stream 必须为 true
-                let request_body = serde_json::json!({
-                    "model": model,
-                    "input": [{
-                        "type": "message",
-                        "role": "user",
-                        "content": [{"type": "input_text", "text": "Say OK"}]
-                    }],
-                    "max_output_tokens": 10,
-                    "stream": true
-                });
+        // API Key 模式使用 chat/completions API，OAuth 模式使用 responses API
+        if is_api_key_mode && base_url.is_none() {
+            // API Key 直连 OpenAI：使用 chat/completions API
+            return self.check_openai_health(&token, None, model).await;
+        }
 
-                tracing::debug!(
-                    "[HEALTH_CHECK] Codex responses API URL: {}, model: {}",
-                    url,
-                    model
-                );
+        // OAuth 模式或有自定义 base_url：使用 responses API
+        let url = match base_url {
+            Some(base) => CodexProvider::build_responses_url(base),
+            None => "https://api.openai.com/v1/responses".to_string(),
+        };
 
-                let response = self
-                    .client
-                    .post(&url)
-                    .bearer_auth(&token)
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream")
-                    .header("Openai-Beta", "responses=experimental")
-                    .header("Originator", "codex_cli_rs")
-                    .header("Session_id", uuid::Uuid::new_v4().to_string())
-                    .header("Conversation_id", uuid::Uuid::new_v4().to_string())
-                    .header(
-                        "User-Agent",
-                        "codex_cli_rs/0.77.0 (ProxyCast health check; Mac OS; arm64)",
-                    )
-                    .json(&request_body)
-                    .timeout(self.health_check_timeout)
-                    .send()
-                    .await
-                    .map_err(|e| format!("请求失败: {}", e))?;
+        // Codex/Yunyi 使用 responses API 格式；云驿等代理要求 stream 必须为 true
+        let request_body = serde_json::json!({
+            "model": model,
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Say OK"}]
+            }],
+            "max_output_tokens": 10,
+            "stream": true
+        });
 
-                if response.status().is_success() {
-                    Ok(())
-                } else {
-                    let status = response.status();
-                    let body = response.text().await.unwrap_or_default();
-                    Err(format!(
-                        "HTTP {} - {}",
-                        status,
-                        body.chars().take(200).collect::<String>()
-                    ))
-                }
-            }
-            None => {
-                // 没有自定义 base_url，使用 OpenAI 官方 chat/completions API
-                self.check_openai_health(&token, None, model).await
-            }
+        tracing::debug!(
+            "[HEALTH_CHECK] Codex responses API URL: {}, model: {}",
+            url,
+            model
+        );
+
+        let response = self
+            .client
+            .post(&url)
+            .bearer_auth(&token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .header("Openai-Beta", "responses=experimental")
+            .header("Originator", "codex_cli_rs")
+            .header("Session_id", uuid::Uuid::new_v4().to_string())
+            .header("Conversation_id", uuid::Uuid::new_v4().to_string())
+            .header(
+                "User-Agent",
+                "codex_cli_rs/0.77.0 (ProxyCast health check; Mac OS; arm64)",
+            )
+            .json(&request_body)
+            .timeout(self.health_check_timeout)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败: {}", e))?;
+
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(format!(
+                "HTTP {} - {}",
+                status,
+                body.chars().take(200).collect::<String>()
+            ))
         }
     }
 

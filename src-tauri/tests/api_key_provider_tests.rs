@@ -12,11 +12,12 @@ use tempfile::TempDir;
 use proxycast_lib::database::dao::api_key_provider::{
     ApiKeyEntry, ApiKeyProvider, ApiKeyProviderDao, ApiProviderType, ProviderGroup,
 };
-use proxycast_lib::database::{init_database, DbConnection};
+use proxycast_lib::database::DbConnection;
 use proxycast_lib::services::api_key_provider_service::ApiKeyProviderService;
 use rusqlite::Connection;
 
 /// 测试上下文
+#[allow(dead_code)]
 struct TestContext {
     pub temp_dir: TempDir,
     pub db: DbConnection,
@@ -101,6 +102,7 @@ impl TestContext {
             project: None,
             location: None,
             region: None,
+            custom_models: vec![],
             created_at: now,
             updated_at: now,
         };
@@ -701,13 +703,15 @@ mod unit_tests {
                 &ctx.db,
                 &provider.id,
                 Some("Updated Name".to_string()),
-                None,
-                Some(false),
-                None,
-                None,
-                None,
-                None,
-                None,
+                None,        // provider_type
+                None,        // api_host
+                Some(false), // enabled
+                None,        // sort_order
+                None,        // api_version
+                None,        // project
+                None,        // location
+                None,        // region
+                None,        // custom_models
             )
             .expect("Failed to update provider");
 
@@ -829,6 +833,7 @@ mod unit_tests {
             project: None,
             location: None,
             region: None,
+            custom_models: vec![],
             created_at: now,
             updated_at: now,
         };

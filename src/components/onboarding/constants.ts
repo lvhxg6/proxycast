@@ -2,7 +2,18 @@
  * 初次安装引导 - 常量配置
  */
 
-import { Code, User, FileCode, Activity, Cpu, Globe } from "lucide-react";
+import {
+  Code,
+  User,
+  FileCode,
+  Activity,
+  Cpu,
+  Globe,
+  Minimize2,
+  Monitor,
+  Maximize2,
+  Fullscreen,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 /**
@@ -102,4 +113,61 @@ export const STORAGE_KEYS = {
   ONBOARDING_COMPLETE: "proxycast_onboarding_complete",
   ONBOARDING_VERSION: "proxycast_onboarding_version",
   USER_PROFILE: "proxycast_user_profile",
+  WINDOW_SIZE_PREFERENCE: "proxycast_window_size_preference",
 } as const;
+
+/**
+ * 窗口尺寸偏好类型
+ */
+export type WindowSizePreference =
+  | "compact"
+  | "default"
+  | "flow_monitor"
+  | "large"
+  | "fullscreen";
+
+/**
+ * 窗口尺寸选项配置
+ */
+export interface WindowSizeOptionConfig {
+  id: WindowSizePreference;
+  name: string;
+  description: string;
+  icon: LucideIcon;
+}
+
+/**
+ * 窗口尺寸选项列表
+ */
+export const windowSizeOptions: WindowSizeOptionConfig[] = [
+  {
+    id: "compact",
+    name: "紧凑模式",
+    description: "1000×700 - 节省屏幕空间",
+    icon: Minimize2,
+  },
+  {
+    id: "default",
+    name: "默认大小",
+    description: "1200×800 - 日常使用",
+    icon: Monitor,
+  },
+  {
+    id: "flow_monitor",
+    name: "Flow Monitor",
+    description: "1600×1000 - 数据展示优化",
+    icon: Activity,
+  },
+  {
+    id: "large",
+    name: "大屏模式",
+    description: "1920×1200 - 大屏幕显示",
+    icon: Maximize2,
+  },
+  {
+    id: "fullscreen",
+    name: "全屏模式",
+    description: "占满整个屏幕",
+    icon: Fullscreen,
+  },
+];

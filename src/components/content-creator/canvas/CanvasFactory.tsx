@@ -10,6 +10,8 @@ import { DocumentCanvas } from "./document";
 import type { DocumentCanvasState } from "./document/types";
 import { PosterCanvas } from "./poster";
 import type { PosterCanvasState } from "./poster/types";
+import { MusicCanvas } from "./music";
+import type { MusicCanvasState } from "./music/types";
 import { getCanvasTypeForTheme, type CanvasStateUnion } from "./canvasUtils";
 
 /**
@@ -55,6 +57,17 @@ export const CanvasFactory: React.FC<CanvasFactoryProps> = memo(
           state={state}
           onStateChange={onStateChange as (s: PosterCanvasState) => void}
           onClose={onClose}
+        />
+      );
+    }
+
+    if (canvasType === "music" && state.type === "music") {
+      return (
+        <MusicCanvas
+          state={state}
+          onStateChange={onStateChange as (s: MusicCanvasState) => void}
+          onClose={onClose}
+          isStreaming={isStreaming}
         />
       );
     }

@@ -84,6 +84,7 @@ impl ToolCallResult {
             timestamp: chrono::Utc::now().to_rfc3339(),
             tool_calls: None,
             tool_call_id: Some(self.tool_call_id.clone()),
+            reasoning_content: None,
         }
     }
 
@@ -301,6 +302,7 @@ impl ToolLoopEngine {
                     .collect()
             }),
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 }
@@ -458,6 +460,7 @@ mod tests {
             content: "".to_string(),
             tool_calls: Some(vec![]),
             usage: None,
+            reasoning_content: None,
         };
         assert!(!ToolLoopEngine::has_tool_calls(&result_empty_tools));
     }
@@ -738,11 +741,6 @@ mod proptests {
     /// 生成有效的消息内容（用于 echo 工具）
     fn arb_message_content() -> impl Strategy<Value = String> {
         "[a-zA-Z0-9 ]{1,50}".prop_map(|s| s)
-    }
-
-    /// 生成工具调用数量
-    fn arb_tool_call_count() -> impl Strategy<Value = usize> {
-        1..=5usize
     }
 
     proptest! {
@@ -1050,6 +1048,7 @@ mod proptests {
                 content: content.clone(),
                 tool_calls: Some(vec![]),
                 usage: None,
+                reasoning_content: None,
             };
 
             // 验证：should_continue 返回 false

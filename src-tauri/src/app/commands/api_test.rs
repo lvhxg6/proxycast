@@ -119,6 +119,7 @@ pub async fn check_api_compatibility(
                         )),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     }],
                     temperature: None,
                     max_tokens: Some(100),
@@ -155,6 +156,7 @@ pub async fn check_api_compatibility(
                         )),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     }],
                     temperature: None,
                     max_tokens: Some(10),
@@ -310,7 +312,9 @@ pub async fn test_api(
     auth: bool,
 ) -> Result<TestResult, String> {
     let s = state.read().await;
-    let base_url = format!("http://{}:{}", s.config.server.host, s.config.server.port);
+    // 使用 status() 获取实际监听的地址（可能与配置不同）
+    let status = s.status();
+    let base_url = format!("http://{}:{}", status.host, status.port);
     let api_key = s
         .running_api_key
         .as_ref()

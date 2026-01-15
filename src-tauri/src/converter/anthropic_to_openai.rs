@@ -16,6 +16,7 @@ pub fn convert_anthropic_to_openai(request: &AnthropicMessagesRequest) -> ChatCo
                 content: Some(MessageContent::Text(system_text)),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
     }
@@ -83,6 +84,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ChatMessage> {
                 content: Some(MessageContent::Text(s.clone())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
         serde_json::Value::Array(parts) => {
@@ -147,6 +149,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ChatMessage> {
                     content,
                     tool_calls: tc,
                     tool_call_id: None,
+                    reasoning_content: None,
                 });
             }
             // 处理 user 消息
@@ -158,6 +161,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ChatMessage> {
                         content: Some(MessageContent::Text(content)),
                         tool_calls: None,
                         tool_call_id: Some(tool_use_id),
+                        reasoning_content: None,
                     });
                 }
 
@@ -168,6 +172,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ChatMessage> {
                         content: Some(MessageContent::Text(text_parts.join(""))),
                         tool_calls: None,
                         tool_call_id: None,
+                        reasoning_content: None,
                     });
                 }
             }

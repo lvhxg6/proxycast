@@ -207,9 +207,8 @@ class NotificationService {
   private playSound(type?: NotificationType): void {
     // 使用 Web Audio API 播放简单的提示音
     try {
-      const audioContext = new (
-        window.AudioContext || (window as any).webkitAudioContext
-      )();
+      const audioContext = new (window.AudioContext ||
+        (window as any).webkitAudioContext)();
       const oscillator = audioContext.createOscillator();
       const gainNode = audioContext.createGain();
 

@@ -242,6 +242,7 @@ impl ApiKeyProviderService {
             project,
             location,
             region,
+            custom_models: Vec::new(),
             created_at: now,
             updated_at: now,
         };
@@ -258,6 +259,7 @@ impl ApiKeyProviderService {
         db: &DbConnection,
         id: &str,
         name: Option<String>,
+        provider_type: Option<ApiProviderType>,
         api_host: Option<String>,
         enabled: Option<bool>,
         sort_order: Option<i32>,
@@ -265,6 +267,7 @@ impl ApiKeyProviderService {
         project: Option<String>,
         location: Option<String>,
         region: Option<String>,
+        custom_models: Option<Vec<String>>,
     ) -> Result<ApiKeyProvider, String> {
         let conn = db.lock().map_err(|e| e.to_string())?;
         let mut provider = ApiKeyProviderDao::get_provider_by_id(&conn, id)
@@ -274,6 +277,13 @@ impl ApiKeyProviderService {
         // 更新字段
         if let Some(n) = name {
             provider.name = n;
+        }
+        // 只有自定义 Provider 才能修改类型
+        if let Some(t) = provider_type {
+            if provider.is_system {
+                return Err("系统 Provider 不允许修改类型".to_string());
+            }
+            provider.provider_type = t;
         }
         if let Some(h) = api_host {
             provider.api_host = h;
@@ -295,6 +305,9 @@ impl ApiKeyProviderService {
         }
         if let Some(r) = region {
             provider.region = if r.is_empty() { None } else { Some(r) };
+        }
+        if let Some(models) = custom_models {
+            provider.custom_models = models;
         }
         provider.updated_at = Utc::now();
 
@@ -1085,6 +1098,7 @@ impl ApiKeyProviderService {
             check_health: false,
             check_model_name: None,
             not_supported_models: Vec::new(),
+            supported_models: Vec::new(),
             usage_count: 0,
             error_count: 0,
             last_used: None,
@@ -1142,6 +1156,7 @@ impl ApiKeyProviderService {
             check_health: false, // 降级凭证不参与健康检查
             check_model_name: None,
             not_supported_models: Vec::new(),
+            supported_models: Vec::new(),
             usage_count: 0,
             error_count: 0,
             last_used: None,

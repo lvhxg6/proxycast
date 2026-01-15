@@ -286,7 +286,7 @@ impl ModelRegistryService {
         // 3. 加载别名配置
         let mut aliases = HashMap::new();
         let aliases_dir = models_dir.join("aliases");
-        let alias_files = ["kiro", "antigravity"];
+        let alias_files = ["kiro", "antigravity", "codex", "gemini"];
 
         for alias_name in alias_files {
             let alias_file = aliases_dir.join(format!("{}.json", alias_name));

@@ -524,6 +524,7 @@ impl NativeAgent {
                 content: Some(OpenAIMessageContent::Text(prompt.clone())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
 
@@ -552,6 +553,7 @@ impl NativeAgent {
                 content: Some(OpenAIMessageContent::Parts(parts)),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }
         } else {
             ChatMessage {
@@ -559,6 +561,7 @@ impl NativeAgent {
                 content: Some(OpenAIMessageContent::Text(user_message.to_string())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }
         };
 
@@ -606,6 +609,7 @@ impl NativeAgent {
                     .collect()
             }),
             tool_call_id: msg.tool_call_id.clone(),
+            reasoning_content: msg.reasoning_content.clone(),
         }
     }
 
@@ -642,6 +646,7 @@ impl NativeAgent {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
             session.updated_at = chrono::Utc::now().to_rfc3339();
         }
@@ -662,6 +667,7 @@ impl NativeAgent {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 tool_calls,
                 tool_call_id: None,
+                reasoning_content: None,
             });
             session.updated_at = chrono::Utc::now().to_rfc3339();
         }
@@ -938,7 +944,6 @@ impl NativeAgentState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::agent::parsers::OpenAISSEParser;
 
     #[test]

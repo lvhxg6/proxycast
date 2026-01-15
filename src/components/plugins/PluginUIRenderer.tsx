@@ -9,7 +9,7 @@
 
 import React, { useState, useEffect } from "react";
 import { AlertCircle, Package, Loader2, ExternalLink } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 import { BrowserInterceptorTool } from "@/components/tools/browser-interceptor/BrowserInterceptorTool";
 import { FlowMonitorPage } from "@/pages";
 import { ConfigManagementPage } from "@/components/config/ConfigManagementPage";
@@ -121,7 +121,7 @@ function PluginLauncher({
     setLaunching(true);
     try {
       // 调用后端启动插件
-      await invoke("launch_plugin_ui", { pluginId });
+      await safeInvoke("launch_plugin_ui", { pluginId });
     } catch (err) {
       console.error("启动插件失败:", err);
     } finally {
@@ -269,42 +269,71 @@ export function PluginUIRenderer({
       setLoading(true);
       setError(null);
 
+      // 调试日志函数
+      const debugLog = async (msg: string) => {
+        console.log(msg);
+        try {
+          await safeInvoke("frontend_debug_log", { message: msg });
+        } catch {
+          // 忽略错误
+        }
+      };
+
       try {
         // 获取插件目录
-        const dir = await invoke<string>("get_plugins_dir");
+        await debugLog(`[PluginUIRenderer] 开始检查插件: ${pluginId}`);
+        const dir = await safeInvoke<string>("get_plugins_dir");
+        await debugLog(`[PluginUIRenderer] 插件目录: ${dir}`);
         setPluginsDir(dir);
 
         // 首先尝试读取插件清单
-        const manifest = await invoke<PluginManifest | null>(
+        await debugLog("[PluginUIRenderer] 调用 read_plugin_manifest_cmd...");
+        const manifest = await safeInvoke<PluginManifest | null>(
           "read_plugin_manifest_cmd",
           {
             pluginId,
           },
+        );
+        await debugLog(
+          `[PluginUIRenderer] manifest 结果: ${JSON.stringify(manifest)}`,
         );
 
         if (manifest) {
           setPluginManifest(manifest);
 
           // 检查数据库中是否已注册
-          const installed = await invoke<boolean>("is_plugin_installed", {
+          await debugLog(`[PluginUIRenderer] 检查是否已安装...`);
+          const installed = await safeInvoke<boolean>("is_plugin_installed", {
             pluginId,
           });
+          await debugLog(
+            `[PluginUIRenderer] is_plugin_installed: ${installed}`,
+          );
 
           if (installed) {
             // 从数据库获取插件信息
-            const plugins = await invoke<InstalledPlugin[]>(
+            await debugLog(`[PluginUIRenderer] 获取已安装插件列表...`);
+            const plugins = await safeInvoke<InstalledPlugin[]>(
               "list_installed_plugins",
             );
+            await debugLog(
+              `[PluginUIRenderer] 已安装插件数量: ${plugins.length}`,
+            );
             const plugin = plugins.find((p) => p.id === pluginId);
+            await debugLog(
+              `[PluginUIRenderer] 找到插件: ${JSON.stringify(plugin)}`,
+            );
 
             if (plugin) {
               setPluginInfo(plugin);
               setLoading(false);
+              await debugLog(`[PluginUIRenderer] 设置 pluginInfo 成功`);
               return;
             }
           }
 
           // 插件存在于文件系统中但未在数据库注册，创建临时的插件信息
+          await debugLog(`[PluginUIRenderer] 创建临时插件信息...`);
           setPluginInfo({
             id: pluginId,
             name: manifest.name,
@@ -313,14 +342,19 @@ export function PluginUIRenderer({
             ui_entry: undefined,
           });
           setLoading(false);
+          await debugLog(`[PluginUIRenderer] 临时插件信息已设置`);
           return;
         }
 
         // 插件不存在
+        await debugLog(`[PluginUIRenderer] manifest 为空，插件不存在`);
         setPluginInfo(null);
         setPluginManifest(null);
       } catch (err) {
         console.error("检查插件失败:", err);
+        await debugLog(
+          `[PluginUIRenderer] 错误: ${err instanceof Error ? err.message : String(err)}`,
+        );
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoading(false);

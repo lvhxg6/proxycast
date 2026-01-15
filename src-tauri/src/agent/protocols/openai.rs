@@ -62,6 +62,7 @@ impl OpenAIProtocol {
                     .collect()
             }),
             tool_call_id: msg.tool_call_id.clone(),
+            reasoning_content: msg.reasoning_content.clone(),
         }
     }
 
@@ -81,6 +82,7 @@ impl OpenAIProtocol {
                 content: Some(OpenAIMessageContent::Text(prompt.clone())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
 
@@ -109,6 +111,7 @@ impl OpenAIProtocol {
                 content: Some(OpenAIMessageContent::Parts(parts)),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }
         } else {
             ChatMessage {
@@ -116,6 +119,7 @@ impl OpenAIProtocol {
                 content: Some(OpenAIMessageContent::Text(user_message.to_string())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }
         };
 
@@ -137,6 +141,7 @@ impl OpenAIProtocol {
                 content: Some(OpenAIMessageContent::Text(prompt.clone())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             });
         }
 
@@ -218,6 +223,7 @@ impl OpenAIProtocol {
                                 content,
                                 tool_calls: None,
                                 usage,
+                                reasoning_content: None,
                             });
                         }
                     }
@@ -260,6 +266,7 @@ impl OpenAIProtocol {
                                         content: full_content,
                                         tool_calls,
                                         usage: final_usage,
+                                        reasoning_content: None,
                                     });
                                 }
                             }
@@ -317,11 +324,13 @@ impl OpenAIProtocol {
                     content,
                     tool_calls: None,
                     usage,
+                    reasoning_content: None,
                 });
             }
         }
 
         let full_content = parser.get_full_content();
+        let reasoning_content = parser.get_reasoning_content();
         let tool_calls = if parser.has_tool_calls() {
             Some(parser.finalize_tool_calls())
         } else {
@@ -340,6 +349,7 @@ impl OpenAIProtocol {
             content: full_content,
             tool_calls,
             usage: final_usage,
+            reasoning_content,
         })
     }
 }

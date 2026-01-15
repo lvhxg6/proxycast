@@ -14,6 +14,10 @@ import type React from "react";
  * - social-media: 社媒内容
  * - poster: 图文海报
  * - document: 办公文档
+ * - paper: 学术论文
+ * - novel: 小说创作
+ * - script: 短剧脚本
+ * - music: 音乐创作
  * - video: 短视频
  */
 export type ThemeType =
@@ -23,6 +27,10 @@ export type ThemeType =
   | "social-media"
   | "poster"
   | "document"
+  | "paper"
+  | "novel"
+  | "script"
+  | "music"
   | "video";
 
 /**

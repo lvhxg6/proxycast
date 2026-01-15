@@ -16,6 +16,7 @@ import {
   Zap,
   RefreshCw,
   LayoutTemplate,
+  Music,
 } from "lucide-react";
 
 /**
@@ -354,6 +355,9 @@ const CATEGORIES = [
     label: "通用对话",
     icon: <Globe className="w-4 h-4" />,
   },
+  { id: "social", label: "社媒内容", icon: <PenTool className="w-4 h-4" /> },
+  { id: "image", label: "图文海报", icon: <ImageIcon className="w-4 h-4" /> },
+  { id: "music", label: "歌词曲谱", icon: <Music className="w-4 h-4" /> },
   {
     id: "knowledge",
     label: "知识探索",
@@ -364,14 +368,12 @@ const CATEGORIES = [
     label: "计划规划",
     icon: <CalendarRange className="w-4 h-4" />,
   },
-  { id: "social", label: "社媒内容", icon: <PenTool className="w-4 h-4" /> },
-  { id: "image", label: "图文海报", icon: <ImageIcon className="w-4 h-4" /> },
   { id: "office", label: "办公文档", icon: <FileText className="w-4 h-4" /> },
   { id: "video", label: "短视频", icon: <Video className="w-4 h-4" /> },
 ];
 
 // 需要显示创作模式选择器的主题
-const CREATION_THEMES = ["social", "image", "office", "video"];
+const CREATION_THEMES = ["social", "image", "office", "video", "music"];
 
 export const EmptyState: React.FC<EmptyStateProps> = ({
   input,
@@ -405,6 +407,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     if (activeTheme === "image") prefix = `[图文生成: ${ratio}, ${style}] `;
     if (activeTheme === "video") prefix = `[视频脚本] `;
     if (activeTheme === "office") prefix = `[办公文档] `;
+    if (activeTheme === "music") prefix = `[歌词曲谱] `;
     if (activeTheme === "knowledge")
       prefix = `[知识探索: ${depth === "deep" ? "深度" : "快速"}] `;
     if (activeTheme === "planning") prefix = `[计划规划] `;
@@ -434,6 +437,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         return "输入视频主题，生成分镜脚本和口播文案...";
       case "office":
         return "输入需求，生成周报、汇报PPT大纲或商务邮件...";
+      case "music":
+        return "输入歌曲主题或情感，帮你创作歌词、设计旋律...";
       case "general":
         return "有什么我可以帮你的？";
       default:
@@ -800,6 +805,18 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                   className="px-4 py-2 text-xs font-normal cursor-pointer hover:bg-muted-foreground/10 transition-colors"
                 >
                   📅 {item}
+                </Badge>
+              ),
+            )}
+          {activeTheme === "music" &&
+            ["流行情歌", "古风歌词", "说唱歌词", "儿歌创作", "旋律学习"].map(
+              (item) => (
+                <Badge
+                  key={item}
+                  variant="secondary"
+                  className="px-4 py-2 text-xs font-normal cursor-pointer hover:bg-muted-foreground/10 transition-colors"
+                >
+                  🎵 {item}
                 </Badge>
               ),
             )}

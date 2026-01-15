@@ -5,11 +5,13 @@
 use mouse_position::mouse_position::Mouse;
 use std::path::Path;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[cfg(target_os = "macos")]
+#[allow(deprecated)]
 use cocoa::appkit::{NSColor, NSWindow};
 #[cfg(target_os = "macos")]
+#[allow(deprecated)]
 use cocoa::base::{id, nil};
 
 /// 窗口错误类型
@@ -164,6 +166,7 @@ pub fn open_floating_window(app: &AppHandle, image_path: &Path) -> Result<(), Wi
         {
             use objc::{msg_send, sel, sel_impl};
             if let Ok(ns_win) = window.ns_window() {
+                #[allow(deprecated, unexpected_cfgs)]
                 unsafe {
                     let ns_window = ns_win as id;
                     // 设置窗口背景透明
@@ -202,6 +205,7 @@ pub fn open_floating_window(app: &AppHandle, image_path: &Path) -> Result<(), Wi
     let (x, y) = calculate_window_position(app);
 
     // 创建悬浮窗口（启用透明）
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     let window = WebviewWindowBuilder::new(app, FLOATING_WINDOW_LABEL, WebviewUrl::App(url.into()))
         .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
         .position(x, y)
@@ -219,6 +223,7 @@ pub fn open_floating_window(app: &AppHandle, image_path: &Path) -> Result<(), Wi
     {
         use objc::{msg_send, sel, sel_impl};
         if let Ok(ns_win) = window.ns_window() {
+            #[allow(deprecated, unexpected_cfgs)]
             unsafe {
                 let ns_window = ns_win as id;
                 // 设置窗口背景透明

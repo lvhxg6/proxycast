@@ -30,3 +30,25 @@ docs/prd/
 
 # Issues tracking (internal use only)
 .issues/
+
+# 开发环境
+**/.local/
+**/.venv/
+**/.conda/
+
+# 生成物
+src-tauri/gen
+
+# Local env files
+.env
+.env.*
+!.env.example
+
+# IDEs 和 编辑器
+.claude/
+.playwright-mcp/
+
+# lwmacct preference
+.task
+Taskfile.yml
+nul

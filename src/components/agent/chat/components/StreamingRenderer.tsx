@@ -417,14 +417,94 @@ export const StreamingRenderer: React.FC<StreamingRendererProps> = memo(
           {/* 交错内容 */}
           {contentParts.map((part, index) => {
             if (part.type === "text") {
-              // 解析并渲染文本（可能包含 thinking 标签）
+              // 解析并渲染文本（可能包含 thinking 标签和 write_file 标签）
               const { visibleText: partVisible } = parseThinkingContent(
                 part.text,
               );
               if (!partVisible) return null;
 
+              // 解析 write_file 标签
+              const partParsed = parseAIResponse(partVisible, isStreaming);
               const isLastPart = index === contentParts.length - 1;
-              // 使用 StreamingText 组件实现逐字符动画
+
+              // 处理文件写入回调
+              if (onWriteFile) {
+                for (const p of partParsed.parts) {
+                  if (
+                    p.type === "write_file" &&
+                    p.filePath &&
+                    typeof p.content === "string"
+                  ) {
+                    const key = `interleaved-${p.filePath}:${p.content.length}`;
+                    if (!processedWriteFilesRef.current.has(key)) {
+                      processedWriteFilesRef.current.add(key);
+                      onWriteFile(p.content, p.filePath);
+                    }
+                  }
+                }
+              }
+
+              // 如果包含 write_file，按部分渲染
+              if (partParsed.hasWriteFile) {
+                return (
+                  <React.Fragment key={`text-${index}`}>
+                    {partParsed.parts.map((p, pIndex) => {
+                      if (
+                        p.type === "write_file" ||
+                        p.type === "pending_write_file"
+                      ) {
+                        const fileContent =
+                          typeof p.content === "string" ? p.content : "";
+                        return (
+                          <div
+                            key={`write-${index}-${pIndex}`}
+                            className="flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-lg text-sm text-muted-foreground cursor-pointer hover:bg-muted/70 transition-colors"
+                            onClick={() =>
+                              p.filePath &&
+                              fileContent &&
+                              onFileClick?.(p.filePath, fileContent)
+                            }
+                          >
+                            <FileText className="w-4 h-4" />
+                            <span>Write</span>
+                            <span className="font-medium text-foreground">
+                              {p.filePath || "文档.md"}
+                            </span>
+                            {p.type === "pending_write_file" && (
+                              <span className="ml-auto animate-pulse">...</span>
+                            )}
+                          </div>
+                        );
+                      } else if (p.type === "text") {
+                        const textContent =
+                          typeof p.content === "string" ? p.content : "";
+                        if (!textContent || textContent.trim() === "")
+                          return null;
+                        return (
+                          <StreamingText
+                            key={`text-${index}-${pIndex}`}
+                            text={textContent}
+                            isStreaming={
+                              isStreaming &&
+                              isLastPart &&
+                              pIndex === partParsed.parts.length - 1
+                            }
+                            showCursor={
+                              shouldShowCursor &&
+                              isLastPart &&
+                              pIndex === partParsed.parts.length - 1
+                            }
+                            onA2UISubmit={onA2UISubmit}
+                          />
+                        );
+                      }
+                      return null;
+                    })}
+                  </React.Fragment>
+                );
+              }
+
+              // 没有 write_file，直接渲染
               return (
                 <StreamingText
                   key={`text-${index}`}

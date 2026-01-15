@@ -201,6 +201,7 @@ impl AgentDao {
                 timestamp,
                 tool_calls,
                 tool_call_id,
+                reasoning_content: None,
             })
         })?;
 

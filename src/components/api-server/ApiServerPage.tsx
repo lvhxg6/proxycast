@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Play,
   Copy,
@@ -24,6 +24,7 @@ import {
   TestResult,
   getDefaultProvider,
   setDefaultProvider,
+  updateProviderEnvVars,
   getNetworkInfo,
   NetworkInfo,
 } from "@/hooks/useTauri";
@@ -32,6 +33,12 @@ import {
   apiKeyProviderApi,
   ProviderWithKeysDisplay,
 } from "@/lib/api/apiKeyProvider";
+import {
+  getModelRegistry,
+  getModelsForProvider,
+  getProviderAliasConfig,
+} from "@/lib/api/modelRegistry";
+import type { EnhancedModelMetadata } from "@/lib/types/modelRegistry";
 
 interface TestState {
   endpoint: string;
@@ -42,6 +49,64 @@ interface TestState {
 }
 
 type TabId = "server" | "routes" | "logs";
+
+// Provider 到 API 类型的映射
+type ApiType = "openai" | "anthropic" | "gemini";
+const getProviderApiType = (provider: string): ApiType => {
+  // 转换为小写以便匹配
+  const p = provider.toLowerCase();
+
+  // OpenAI 兼容类型
+  if (
+    p === "codex" ||
+    p === "openai" ||
+    p === "openai-response" ||
+    p === "azure_openai" ||
+    p === "azure-openai" ||
+    p === "qwen" ||
+    p === "iflow"
+  ) {
+    return "openai";
+  }
+
+  // Anthropic 类型
+  if (
+    p === "anthropic" ||
+    p === "claude" ||
+    p === "claude_oauth" ||
+    p === "kiro"
+  ) {
+    return "anthropic";
+  }
+
+  // Gemini 类型
+  if (
+    p === "gemini" ||
+    p === "gemini_api_key" ||
+    p === "antigravity" ||
+    p === "vertex" ||
+    p === "vertexai"
+  ) {
+    return "gemini";
+  }
+
+  // 默认返回 openai
+  return "openai";
+};
+
+// 需要使用别名配置的 Provider 列表
+const ALIAS_PROVIDERS = [
+  "antigravity",
+  "kiro",
+  "codex",
+  "gemini",
+  "gemini_api_key",
+];
+
+// 别名配置文件名映射（某些 Provider 共享同一个别名配置）
+const ALIAS_CONFIG_MAPPING: Record<string, string> = {
+  gemini_api_key: "gemini",
+};
 
 // 可用的 Provider 信息（合并 OAuth 凭证池和 API Key Provider）
 interface AvailableProvider {
@@ -78,6 +143,11 @@ export function ApiServerPage() {
   // 网络信息
   const [networkInfo, setNetworkInfo] = useState<NetworkInfo | null>(null);
 
+  // 模型库状态
+  const [allModels, setAllModels] = useState<EnhancedModelMetadata[]>([]);
+  const [testModel, setTestModel] = useState<string>("");
+  const [_modelsLoading, setModelsLoading] = useState(false);
+
   // 自动清除消息
   useEffect(() => {
     if (message) {
@@ -100,9 +170,14 @@ export function ApiServerPage() {
   const fetchConfig = async () => {
     try {
       const c = await getConfig();
+      console.log(
+        "[DEBUG] fetchConfig - loaded config.server.host:",
+        c.server.host,
+      );
       setConfig(c);
       setEditPort(c.server.port.toString());
       setEditHost(c.server.host);
+      console.log("[DEBUG] fetchConfig - setEditHost to:", c.server.host);
       setEditApiKey(c.server.api_key);
     } catch (e) {
       console.error(e);
@@ -137,6 +212,184 @@ export function ApiServerPage() {
     }
   };
 
+  // 加载模型库
+  const loadModels = async (
+    provider?: string,
+    providers?: ProviderWithKeysDisplay[],
+    resetSelection: boolean = false,
+  ) => {
+    setModelsLoading(true);
+    try {
+      let models: EnhancedModelMetadata[];
+
+      if (provider) {
+        // 检查是否是别名 Provider
+        const providerLower = provider.toLowerCase();
+        if (ALIAS_PROVIDERS.includes(providerLower)) {
+          // 使用别名配置
+          const aliasConfigKey =
+            ALIAS_CONFIG_MAPPING[providerLower] || providerLower;
+          const aliasConfig = await getProviderAliasConfig(aliasConfigKey);
+
+          if (aliasConfig && aliasConfig.models.length > 0) {
+            // 将别名配置中的模型转换为 EnhancedModelMetadata 格式
+            models = aliasConfig.models.map(
+              (modelName): EnhancedModelMetadata => {
+                const aliasInfo = aliasConfig.aliases[modelName];
+                return {
+                  id: modelName,
+                  display_name: modelName,
+                  provider_id: providerLower,
+                  provider_name: provider,
+                  family: aliasInfo?.provider || null,
+                  tier: "pro" as const,
+                  capabilities: {
+                    vision: false,
+                    tools: true,
+                    streaming: true,
+                    json_mode: true,
+                    function_calling: true,
+                    reasoning: modelName.includes("thinking"),
+                  },
+                  pricing: null,
+                  limits: {
+                    context_length: null,
+                    max_output_tokens: null,
+                    requests_per_minute: null,
+                    tokens_per_minute: null,
+                  },
+                  status: "active" as const,
+                  release_date: null,
+                  is_latest: false,
+                  description:
+                    aliasInfo?.description ||
+                    `${aliasInfo?.actual || modelName}`,
+                  source: "custom" as const,
+                  created_at: Date.now() / 1000,
+                  updated_at: Date.now() / 1000,
+                };
+              },
+            );
+          } else {
+            models = [];
+          }
+        } else {
+          // 非别名 Provider，使用模型注册表
+          // 首先检查是否是自定义 API Key Provider
+          // 如果是，优先使用其 custom_models 字段
+          let customModels: string[] | undefined;
+          let registryId = provider; // 默认使用 provider ID 作为 registryId
+          let fallbackRegistryId: string | undefined;
+
+          if (providers) {
+            const customProvider = providers.find((p) => p.id === provider);
+            if (customProvider) {
+              // 获取自定义模型列表
+              customModels = customProvider.custom_models;
+              // 使用 provider.id 作为 registryId（适用于系统预设的 Provider，如 deepseek, moonshot）
+              // 如果模型注册表中没有该 id 的模型，则回退到使用 type 映射
+              registryId = customProvider.id;
+              // 根据 type 获取回退的 registryId
+              const typeToRegistryMap: Record<string, string> = {
+                openai: "openai",
+                anthropic: "anthropic",
+                "anthropic-compatible": "anthropic",
+                gemini: "gemini",
+                "azure-openai": "openai",
+                vertexai: "google",
+                ollama: "ollama",
+              };
+              fallbackRegistryId =
+                typeToRegistryMap[customProvider.type.toLowerCase()] ||
+                customProvider.type.toLowerCase();
+            }
+          }
+
+          // 收集所有模型
+          let allModels: EnhancedModelMetadata[] = [];
+          const existingIds = new Set<string>();
+
+          // 1. 首先添加自定义模型（排在最前面）
+          if (customModels && customModels.length > 0) {
+            const customModelList = customModels.map(
+              (modelName): EnhancedModelMetadata => ({
+                id: modelName,
+                display_name: modelName,
+                provider_id: provider,
+                provider_name: provider,
+                family: null,
+                tier: "pro" as const,
+                capabilities: {
+                  vision: false,
+                  tools: true,
+                  streaming: true,
+                  json_mode: true,
+                  function_calling: true,
+                  reasoning: modelName.includes("thinking"),
+                },
+                pricing: null,
+                limits: {
+                  context_length: null,
+                  max_output_tokens: null,
+                  requests_per_minute: null,
+                  tokens_per_minute: null,
+                },
+                status: "active" as const,
+                release_date: null,
+                is_latest: false,
+                description: `自定义模型: ${modelName}`,
+                source: "custom" as const,
+                created_at: Date.now() / 1000,
+                updated_at: Date.now() / 1000,
+              }),
+            );
+            allModels = [...customModelList];
+            customModels.forEach((id) => existingIds.add(id));
+          }
+
+          // 2. 添加模型注册表中的模型
+          // 优先使用 registryId，如果没有模型则回退到 fallbackRegistryId
+          let registryModels = await getModelsForProvider(registryId);
+          if (
+            registryModels.length === 0 &&
+            fallbackRegistryId &&
+            fallbackRegistryId !== registryId
+          ) {
+            registryModels = await getModelsForProvider(fallbackRegistryId);
+          }
+
+          // 过滤掉已存在的模型
+          const newModels = registryModels.filter(
+            (m) => !existingIds.has(m.id),
+          );
+          allModels = [...allModels, ...newModels];
+
+          models = allModels;
+        }
+      } else {
+        models = await getModelRegistry();
+      }
+
+      setAllModels(models);
+
+      // 只在需要重置选择时，或当前选择的模型不在新列表中时，才重置测试模型选择
+      if (resetSelection || !models.find((m) => m.id === testModel)) {
+        if (models.length > 0) {
+          const defaultModel =
+            models.find((m) => m.tier === "pro") || models[0];
+          if (defaultModel) {
+            setTestModel(defaultModel.id);
+          }
+        } else {
+          setTestModel("");
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load models:", e);
+    }
+    setModelsLoading(false);
+  };
+
   const handleStart = async () => {
     setLoading(true);
     setError(null);
@@ -167,10 +420,42 @@ export function ApiServerPage() {
     setLoading(false);
   };
 
+  // 自动保存监听地址
+  const handleHostChange = async (newHost: string) => {
+    setEditHost(newHost);
+
+    // 如果配置已加载，自动保存
+    if (config) {
+      try {
+        const newConfig = {
+          ...config,
+          server: {
+            ...config.server,
+            host: newHost,
+          },
+        };
+        await saveConfig(newConfig);
+        setConfig(newConfig);
+        console.log("[DEBUG] handleHostChange - 自动保存地址:", newHost);
+      } catch (e: unknown) {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("[DEBUG] handleHostChange - 保存失败:", errMsg);
+        setMessage({ type: "error", text: `保存地址失败: ${errMsg}` });
+      }
+    }
+  };
+
   const handleSaveServerConfig = async () => {
     if (!config) return;
     setLoading(true);
     try {
+      // 调试日志：确认保存时的值
+      console.log("[DEBUG] handleSaveServerConfig - editHost:", editHost);
+      console.log(
+        "[DEBUG] handleSaveServerConfig - config.server.host:",
+        config.server.host,
+      );
+
       const newConfig = {
         ...config,
         server: {
@@ -180,11 +465,21 @@ export function ApiServerPage() {
           api_key: editApiKey,
         },
       };
+
+      console.log(
+        "[DEBUG] handleSaveServerConfig - newConfig.server.host:",
+        newConfig.server.host,
+      );
+
       await saveConfig(newConfig);
+
+      console.log("[DEBUG] handleSaveServerConfig - saveConfig completed");
+
       await fetchConfig();
       setMessage({ type: "success", text: "服务器配置已保存" });
     } catch (e: unknown) {
       const errMsg = e instanceof Error ? e.message : String(e);
+      console.error("[DEBUG] handleSaveServerConfig - error:", errMsg);
       setMessage({ type: "error", text: `保存失败: ${errMsg}` });
     }
     setLoading(false);
@@ -236,6 +531,7 @@ export function ApiServerPage() {
     const typeIconMap: Record<string, string> = {
       openai: "openai",
       anthropic: "claude",
+      "anthropic-compatible": "claude",
       gemini: "gemini",
       "azure-openai": "openai",
       vertexai: "gemini",
@@ -254,6 +550,23 @@ export function ApiServerPage() {
   const [providerSwitchMsg, setProviderSwitchMsg] = useState<string | null>(
     null,
   );
+
+  // 当 defaultProvider 变化时，重新加载模型并重置选择
+  useEffect(() => {
+    loadModels(defaultProvider, apiKeyProviders, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultProvider]);
+
+  // 当 apiKeyProviders 首次加载时，重新加载模型（不重置选择）
+  // 这是为了确保自定义 Provider 的 type 能被正确识别
+  const [apiKeyProvidersLoaded, setApiKeyProvidersLoaded] = useState(false);
+  useEffect(() => {
+    if (apiKeyProviders.length > 0 && !apiKeyProvidersLoaded) {
+      setApiKeyProvidersLoaded(true);
+      loadModels(defaultProvider, apiKeyProviders, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiKeyProviders]);
 
   // 加载凭证池概览
   const loadPoolOverview = async () => {
@@ -342,10 +655,14 @@ export function ApiServerPage() {
       }
     });
 
-    // 转换为数组并按凭证数量排序
-    const providers = Array.from(providerMap.values()).sort(
-      (a, b) => b.totalCount - a.totalCount,
-    );
+    // 转换为数组并按凭证数量排序，Qwen 排到最后
+    const providers = Array.from(providerMap.values()).sort((a, b) => {
+      // Qwen 排到最后
+      if (a.id === "qwen" && b.id !== "qwen") return 1;
+      if (b.id === "qwen" && a.id !== "qwen") return -1;
+      // 其他按凭证数量排序
+      return b.totalCount - a.totalCount;
+    });
     setAvailableProviders(providers);
   };
 
@@ -415,6 +732,16 @@ export function ApiServerPage() {
       const freshOverview = await providerPoolApi.getOverview();
       setPoolOverview(freshOverview);
 
+      // 如果是 API Key Provider，更新对应的环境变量
+      const apiKeyProvider = apiKeyProviders.find((p) => p.id === providerId);
+      if (apiKeyProvider && apiKeyProvider.api_host) {
+        // 根据 provider.type 更新对应的环境变量
+        await updateProviderEnvVars(
+          apiKeyProvider.type,
+          apiKeyProvider.api_host,
+        );
+      }
+
       // 获取该 Provider 的凭证信息
       const provider = availableProviders.find((p) => p.id === providerId);
       const label = providerLabels[providerId] || providerId;
@@ -445,134 +772,144 @@ export function ApiServerPage() {
   // - 0.0.0.0: 使用 127.0.0.1（本机访问所有接口）
   // - 局域网 IP: 使用该 IP（允许局域网测试）
   const getTestUrl = (host: string, port: number) => {
-    if (host === "0.0.0.0") {
+    if (host === "0.0.0.0" || !host) {
       return `http://127.0.0.1:${port}`;
     }
     return `http://${host}:${port}`;
   };
 
-  // 使用 editHost 而不是 status.host，这样可以实时反映用户的选择
-  const currentHost = status?.running ? status.host : editHost;
+  // 获取当前有效的监听地址
+  // 优先使用服务器运行时的实际地址，否则使用编辑中的地址
+  const currentHost = status?.running ? status.host : editHost || "127.0.0.1";
   const currentPort = status?.running
     ? status.port
     : parseInt(editPort) || 8999;
   const serverUrl = getTestUrl(currentHost, currentPort);
   const apiKey = config?.server.api_key ?? "";
 
-  // 根据 Provider 类型获取测试模型
-  const getTestModel = (provider: string): string => {
-    switch (provider) {
-      case "antigravity":
-        return "gemini-3-pro-preview";
-      case "gemini":
-        return "gemini-2.0-flash";
-      case "qwen":
-        return "qwen-max";
+  // 检测是否发生了地址自动切换
+  // 只有当配置的地址是一个不可用的局域网 IP（不在当前网卡列表中）时才显示提示
+  // 127.0.0.1, 0.0.0.0 等特殊地址不会触发自动切换
+  const hostMismatch = useMemo(() => {
+    if (!status?.running || !config?.server.host) return false;
+
+    const configuredHost = config.server.host;
+    const actualHost = status.host;
+
+    // 如果地址相同，没有切换
+    if (configuredHost === actualHost) return false;
+
+    // 如果配置的是特殊地址，不显示提示（这些地址不会被自动切换）
+    if (
+      ["127.0.0.1", "localhost", "0.0.0.0", "::", "::1"].includes(
+        configuredHost,
+      )
+    ) {
+      return false;
+    }
+
+    // 配置的是局域网 IP，但实际运行地址不同，说明发生了自动切换
+    return true;
+  }, [status, config]);
+
+  // 计算 Select 组件的可用选项
+  // 包括固定选项 + 网络接口 IP + 当前配置的地址（如果不在列表中）+ 实际运行地址
+  const hostOptions = useMemo(() => {
+    const options = new Set<string>(["127.0.0.1", "0.0.0.0"]);
+    // 添加网络接口 IP
+    networkInfo?.all_ips.forEach((ip) => options.add(ip));
+    // 如果当前配置的地址不在列表中，也添加进去
+    if (editHost && !options.has(editHost)) {
+      options.add(editHost);
+    }
+    // 如果服务器运行中且实际地址不在列表中，也添加进去
+    if (status?.running && status.host && !options.has(status.host)) {
+      options.add(status.host);
+    }
+    return Array.from(options);
+  }, [networkInfo, editHost, status]);
+
+  // 动态生成测试端点
+  const testEndpoints = useMemo(() => {
+    if (!testModel) return [];
+
+    // 首先检查是否是自定义 API Key Provider
+    // 如果是，使用其 type 字段来确定 API 类型
+    let effectiveProvider = defaultProvider;
+    const customProvider = apiKeyProviders.find(
+      (p) => p.id === defaultProvider,
+    );
+    if (customProvider) {
+      effectiveProvider = customProvider.type;
+    }
+
+    const apiType = getProviderApiType(effectiveProvider);
+
+    switch (apiType) {
       case "openai":
-        return "gpt-4o";
-      case "claude":
-        return "claude-sonnet-4-20250514";
-      case "deepseek":
-        return "deepseek-chat";
-      case "kiro":
-      default:
-        return "claude-opus-4-5-20251101";
-    }
-  };
-
-  const testModel = getTestModel(defaultProvider);
-
-  // 根据 Provider 类型获取 Gemini 测试模型列表
-  const getGeminiTestModels = (provider: string): string[] => {
-    switch (provider) {
-      case "antigravity":
         return [
-          "gemini-3-pro-preview",
-          "gemini-3-pro-image-preview",
-          "gemini-3-flash-preview",
-          "gemini-claude-sonnet-4-5",
-        ];
-      case "gemini":
-        return ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"];
-      default:
-        return ["gemini-2.0-flash"];
-    }
-  };
-
-  const geminiTestModels = getGeminiTestModels(defaultProvider);
-
-  // 是否显示 Gemini 测试端点
-  const showGeminiTest =
-    defaultProvider === "antigravity" || defaultProvider === "gemini";
-
-  // Test endpoints
-  const testEndpoints = [
-    {
-      id: "health",
-      name: "健康检查",
-      method: "GET",
-      path: "/health",
-      needsAuth: false,
-      body: null,
-    },
-    {
-      id: "models",
-      name: "模型列表",
-      method: "GET",
-      path: "/v1/models",
-      needsAuth: true,
-      body: null,
-    },
-    {
-      id: "chat",
-      name: "OpenAI Chat",
-      method: "POST",
-      path: "/v1/chat/completions",
-      needsAuth: true,
-      body: JSON.stringify({
-        model: testModel,
-        messages: [{ role: "user", content: "Say hi in one word" }],
-      }),
-    },
-    {
-      id: "anthropic",
-      name: "Anthropic Messages",
-      method: "POST",
-      path: "/v1/messages",
-      needsAuth: true,
-      body: JSON.stringify({
-        model: testModel,
-        max_tokens: 100,
-        messages: [
           {
-            role: "user",
-            content: "What is 1+1? Answer with just the number.",
+            id: "chat",
+            name: "OpenAI Chat",
+            method: "POST",
+            path: "/v1/chat/completions",
+            needsAuth: true,
+            body: JSON.stringify({
+              model: testModel,
+              messages: [{ role: "user", content: "Say hi in one word" }],
+            }),
           },
-        ],
-      }),
-    },
-    // Gemini 原生协议测试（仅在 Antigravity 或 Gemini Provider 时显示）
-    ...(showGeminiTest
-      ? geminiTestModels.map((model, index) => ({
-          id: `gemini-${index}`,
-          name: `Gemini ${model}`,
-          method: "POST",
-          path: `/v1/gemini/${model}:generateContent`,
-          needsAuth: true,
-          body: JSON.stringify({
-            contents: [
-              {
-                role: "user",
-                parts: [{ text: "What is 2+2? Answer with just the number." }],
+        ];
+
+      case "anthropic":
+        return [
+          {
+            id: "anthropic",
+            name: "Anthropic Messages",
+            method: "POST",
+            path: "/v1/messages",
+            needsAuth: true,
+            body: JSON.stringify({
+              model: testModel,
+              max_tokens: 100,
+              messages: [
+                {
+                  role: "user",
+                  content: "What is 1+1? Answer with just the number.",
+                },
+              ],
+            }),
+          },
+        ];
+
+      case "gemini":
+        return [
+          {
+            id: "gemini",
+            name: `Gemini ${testModel}`,
+            method: "POST",
+            path: `/v1/gemini/${testModel}:generateContent`,
+            needsAuth: true,
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    { text: "What is 2+2? Answer with just the number." },
+                  ],
+                },
+              ],
+              generationConfig: {
+                maxOutputTokens: 100,
               },
-            ],
-            generationConfig: {
-              maxOutputTokens: 100,
-            },
-          }),
-        }))
-      : []),
-  ];
+            }),
+          },
+        ];
+
+      default:
+        return [];
+    }
+  }, [defaultProvider, testModel, apiKeyProviders]);
 
   const runTest = async (endpoint: (typeof testEndpoints)[0]) => {
     setTestResults((prev) => ({
@@ -745,8 +1082,10 @@ export function ApiServerPage() {
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground">监听地址:</span>
                   <Select.Root
-                    value={editHost}
-                    onValueChange={setEditHost}
+                    value={
+                      status?.running ? status.host : editHost || "127.0.0.1"
+                    }
+                    onValueChange={handleHostChange}
                     disabled={status?.running}
                   >
                     <Select.Trigger className="inline-flex min-w-[200px] items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50">
@@ -756,61 +1095,44 @@ export function ApiServerPage() {
                       </Select.Icon>
                     </Select.Trigger>
                     <Select.Portal>
-                      <Select.Content className="relative z-50 min-w-[200px] overflow-hidden rounded-md border border-border bg-white dark:bg-gray-900 text-foreground shadow-lg animate-in fade-in-80 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2">
+                      <Select.Content
+                        position="popper"
+                        side="bottom"
+                        align="start"
+                        sideOffset={4}
+                        className="z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-border bg-white dark:bg-gray-900 text-foreground shadow-lg"
+                      >
                         <Select.Viewport className="p-1 bg-white dark:bg-gray-900">
-                          <Select.Item
-                            value="127.0.0.1"
-                            className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-                          >
-                            <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
-                              <Check className="h-4 w-4" />
-                            </Select.ItemIndicator>
-                            <Select.ItemText>
-                              <span className="flex items-center gap-2">
-                                <span className="font-mono">127.0.0.1</span>
-                                <span className="text-xs text-muted-foreground">
-                                  (仅本机)
-                                </span>
-                              </span>
-                            </Select.ItemText>
-                          </Select.Item>
-
-                          <Select.Item
-                            value="0.0.0.0"
-                            className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-                          >
-                            <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
-                              <Check className="h-4 w-4" />
-                            </Select.ItemIndicator>
-                            <Select.ItemText>
-                              <span className="flex items-center gap-2">
-                                <span className="font-mono">0.0.0.0</span>
-                                <span className="text-xs text-muted-foreground">
-                                  (所有接口)
-                                </span>
-                              </span>
-                            </Select.ItemText>
-                          </Select.Item>
-
-                          {networkInfo?.all_ips.map((ip) => (
-                            <Select.Item
-                              key={ip}
-                              value={ip}
-                              className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
-                            >
-                              <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
-                                <Check className="h-4 w-4" />
-                              </Select.ItemIndicator>
-                              <Select.ItemText>
-                                <span className="flex items-center gap-2">
-                                  <span className="font-mono">{ip}</span>
-                                  <span className="text-xs text-muted-foreground">
-                                    (局域网)
+                          {hostOptions.map((ip) => {
+                            // 确定 IP 类型标签
+                            let label = "(局域网)";
+                            if (ip === "127.0.0.1") {
+                              label = "(仅本机)";
+                            } else if (ip === "0.0.0.0") {
+                              label = "(所有接口)";
+                            } else if (!networkInfo?.all_ips.includes(ip)) {
+                              label = "(已配置)";
+                            }
+                            return (
+                              <Select.Item
+                                key={ip}
+                                value={ip}
+                                className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2.5 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                              >
+                                <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+                                  <Check className="h-4 w-4" />
+                                </Select.ItemIndicator>
+                                <Select.ItemText>
+                                  <span className="flex items-center gap-2">
+                                    <span className="font-mono">{ip}</span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {label}
+                                    </span>
                                   </span>
-                                </span>
-                              </Select.ItemText>
-                            </Select.Item>
-                          ))}
+                                </Select.ItemText>
+                              </Select.Item>
+                            );
+                          })}
                         </Select.Viewport>
                       </Select.Content>
                     </Select.Portal>
@@ -852,14 +1174,15 @@ export function ApiServerPage() {
                 <span>修改配置需要先停止服务</span>
               </div>
             )}
-            {(editHost === "0.0.0.0" ||
-              (networkInfo?.all_ips.includes(editHost) ?? false)) &&
-              !status?.running && (
-                <div className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 dark:bg-amber-950/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-500">
-                  <span>⚠️</span>
-                  <span>局域网访问需要使用非默认 API Key 以确保安全</span>
-                </div>
-              )}
+            {hostMismatch && (
+              <div className="mt-3 flex items-center gap-2 rounded-md bg-blue-50 dark:bg-blue-950/20 px-3 py-2 text-xs text-blue-700 dark:text-blue-400">
+                <span>ℹ️</span>
+                <span>
+                  配置的地址 {config?.server.host} 不可用，已自动切换到{" "}
+                  {status?.host}。 停止服务后可更新配置。
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Default Provider - 动态显示有凭证的 Provider */}
@@ -1027,12 +1350,67 @@ export function ApiServerPage() {
               <h3 className="font-semibold">API 测试</h3>
               <button
                 onClick={runAllTests}
-                disabled={!status?.running}
+                disabled={!status?.running || testEndpoints.length === 0}
                 className="flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
               >
                 <Play className="h-4 w-4" />
                 测试全部
               </button>
+            </div>
+
+            {/* 模型选择器 */}
+            <div className="mb-4 flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">测试模型:</span>
+              <Select.Root value={testModel} onValueChange={setTestModel}>
+                <Select.Trigger className="inline-flex min-w-[300px] items-center justify-between gap-2 rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50">
+                  <Select.Value placeholder="选择模型..." />
+                  <Select.Icon>
+                    <ChevronDown className="h-4 w-4 opacity-50" />
+                  </Select.Icon>
+                </Select.Trigger>
+                <Select.Portal>
+                  <Select.Content
+                    position="popper"
+                    side="bottom"
+                    align="start"
+                    sideOffset={4}
+                    className="z-50 max-h-[300px] min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-md border border-border bg-white dark:bg-gray-900 text-foreground shadow-lg"
+                  >
+                    <Select.Viewport className="p-1">
+                      {allModels.map((model) => (
+                        <Select.Item
+                          key={model.id}
+                          value={model.id}
+                          className="relative flex cursor-pointer select-none items-center rounded-sm px-8 py-2 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+                        >
+                          <Select.ItemIndicator className="absolute left-2 flex h-3.5 w-3.5 items-center justify-center">
+                            <Check className="h-4 w-4" />
+                          </Select.ItemIndicator>
+                          <Select.ItemText>
+                            <span className="flex items-center gap-2">
+                              <span>{model.display_name}</span>
+                              <span className="text-xs opacity-60">
+                                {model.provider_name}
+                              </span>
+                              <span
+                                className={`text-xs px-1.5 py-0.5 rounded ${
+                                  model.tier === "max"
+                                    ? "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400"
+                                    : model.tier === "pro"
+                                      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                                      : "bg-gray-100 text-gray-700 dark:bg-gray-900/30 dark:text-gray-400"
+                                }`}
+                              >
+                                {model.tier}
+                              </span>
+                            </span>
+                          </Select.ItemText>
+                        </Select.Item>
+                      ))}
+                    </Select.Viewport>
+                  </Select.Content>
+                </Select.Portal>
+              </Select.Root>
             </div>
 
             <div className="space-y-3">

@@ -1078,16 +1078,12 @@ impl Default for ModelsConfig {
             },
         );
 
-        // Codex
+        // Codex - 模型列表从别名配置动态加载
         providers.insert(
             "codex".to_string(),
             ProviderModelsConfig {
                 label: "Codex".to_string(),
-                models: vec![ModelInfo {
-                    id: "codex-mini-latest".to_string(),
-                    name: None,
-                    enabled: true,
-                }],
+                models: vec![], // 从 aliases/codex.json 动态加载
             },
         );
 

@@ -19,7 +19,9 @@ impl PluginLoader {
     }
 
     pub fn default_plugins_dir() -> PathBuf {
-        dirs::config_dir()
+        // 使用 data_dir 而不是 config_dir，与 PluginInstaller 保持一致
+        // 在 macOS 上两者相同，但在其他平台上可能不同
+        dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("proxycast")
             .join("plugins")

@@ -3,7 +3,10 @@
 //! 包含 Tauri 应用的主入口函数和命令注册。
 
 use std::sync::Arc;
-use tauri::{Emitter, Listener, Manager};
+use tauri::Manager;
+
+#[cfg(target_os = "macos")]
+use tauri::{Emitter, Listener};
 
 use crate::commands;
 use crate::tray::{TrayIconStatus, TrayManager, TrayStateSnapshot};
@@ -68,6 +71,7 @@ pub fn run() {
         enhanced_stats_service: enhanced_stats_service_state,
         batch_operations: batch_operations_state,
         native_agent: native_agent_state,
+        aster_agent: aster_agent_state,
         oauth_plugin_manager: oauth_plugin_manager_state,
         orchestrator: orchestrator_state,
         connect_state,
@@ -76,6 +80,7 @@ pub fn run() {
         terminal_manager: terminal_manager_state,
         webview_manager: webview_manager_state,
         update_check_service: update_check_service_state,
+        session_files: session_files_state,
         shared_stats,
         shared_tokens,
         shared_logger,
@@ -149,6 +154,7 @@ pub fn run() {
         .manage(enhanced_stats_service_state)
         .manage(batch_operations_state)
         .manage(native_agent_state)
+        .manage(aster_agent_state)
         .manage(oauth_plugin_manager_state)
         .manage(orchestrator_state)
         .manage(connect_state)
@@ -157,6 +163,7 @@ pub fn run() {
         .manage(terminal_manager_state)
         .manage(webview_manager_state)
         .manage(update_check_service_state)
+        .manage(session_files_state)
         .on_window_event(move |window, event| {
             // 处理窗口关闭事件
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -517,8 +524,10 @@ pub fn run() {
                         .await
                     {
                         Ok(_) => {
-                            let host = s.config.server.host.clone();
-                            let port = s.config.server.port;
+                            // 使用 status() 获取实际使用的地址（可能已经自动切换到有效的 IP）
+                            let status = s.status();
+                            let host = status.host;
+                            let port = status.port;
                             logs.write()
                                 .await
                                 .add("info", &format!("[启动] 服务器已启动: {host}:{port}"));
@@ -578,6 +587,42 @@ pub fn run() {
             });
             tracing::info!("[启动] 后台更新检查任务已启动");
 
+            // 启动会话文件清理任务（清理 30 天前的过期会话）
+            tauri::async_runtime::spawn(async move {
+                // 延迟 10 秒执行，避免影响启动性能
+                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+
+                match crate::session_files::SessionFileStorage::new() {
+                    Ok(storage) => {
+                        // 清理过期会话（30 天）
+                        match storage.cleanup_expired(30) {
+                            Ok(count) if count > 0 => {
+                                tracing::info!("[启动] 已清理 {} 个过期会话", count);
+                            }
+                            Ok(_) => {
+                                tracing::debug!("[启动] 无过期会话需要清理");
+                            }
+                            Err(e) => {
+                                tracing::warn!("[启动] 清理过期会话失败: {}", e);
+                            }
+                        }
+                        // 清理空会话
+                        match storage.cleanup_empty() {
+                            Ok(count) if count > 0 => {
+                                tracing::info!("[启动] 已清理 {} 个空会话", count);
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                tracing::warn!("[启动] 清理空会话失败: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("[启动] 会话文件存储初始化失败: {}", e);
+                    }
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -592,6 +637,7 @@ pub fn run() {
             app_commands::set_default_provider,
             app_commands::get_endpoint_providers,
             app_commands::set_endpoint_provider,
+            app_commands::update_provider_env_vars,
             // Unified OAuth commands (new)
             commands::oauth_cmd::get_oauth_credentials,
             commands::oauth_cmd::reload_oauth_credentials,
@@ -839,6 +885,7 @@ pub fn run() {
             commands::plugin_cmd::get_plugins_with_ui,
             commands::plugin_cmd::read_plugin_manifest_cmd,
             commands::plugin_cmd::launch_plugin_ui,
+            commands::plugin_cmd::frontend_debug_log,
             // Plugin RPC commands
             commands::plugin_rpc_cmd::plugin_rpc_connect,
             commands::plugin_rpc_cmd::plugin_rpc_disconnect,
@@ -1028,6 +1075,16 @@ pub fn run() {
             commands::native_agent_cmd::native_agent_get_session,
             commands::native_agent_cmd::native_agent_delete_session,
             commands::native_agent_cmd::native_agent_list_sessions,
+            // Aster Agent commands
+            commands::aster_agent_cmd::aster_agent_init,
+            commands::aster_agent_cmd::aster_agent_status,
+            commands::aster_agent_cmd::aster_agent_configure_provider,
+            commands::aster_agent_cmd::aster_agent_chat_stream,
+            commands::aster_agent_cmd::aster_agent_stop,
+            commands::aster_agent_cmd::aster_session_create,
+            commands::aster_agent_cmd::aster_session_list,
+            commands::aster_agent_cmd::aster_session_get,
+            commands::aster_agent_cmd::aster_agent_confirm,
             // Models config commands
             commands::models_cmd::get_models_config,
             commands::models_cmd::save_models_config,
@@ -1117,6 +1174,13 @@ pub fn run() {
             commands::model_registry_cmd::get_models_by_tier,
             commands::model_registry_cmd::get_provider_alias_config,
             commands::model_registry_cmd::get_all_alias_configs,
+            // Model Management commands (动态模型列表)
+            commands::model_cmd::get_credential_models,
+            commands::model_cmd::refresh_credential_models,
+            commands::model_cmd::get_all_models_by_provider,
+            commands::model_cmd::get_all_available_models,
+            commands::model_cmd::refresh_all_credential_models,
+            commands::model_cmd::get_default_models_for_provider,
             // Terminal commands
             commands::terminal_cmd::terminal_create_session,
             commands::terminal_cmd::terminal_write,
@@ -1177,6 +1241,26 @@ pub fn run() {
             commands::update_cmd::update_last_check_timestamp,
             commands::update_cmd::close_update_window,
             commands::update_cmd::test_update_window,
+            // Music commands
+            commands::music_cmd::check_python_env,
+            commands::music_cmd::analyze_midi,
+            commands::music_cmd::convert_mp3_to_midi,
+            commands::music_cmd::load_music_resource,
+            commands::music_cmd::install_python_dependencies,
+            // Session Files commands
+            commands::session_files_cmd::session_files_create,
+            commands::session_files_cmd::session_files_exists,
+            commands::session_files_cmd::session_files_get_or_create,
+            commands::session_files_cmd::session_files_delete,
+            commands::session_files_cmd::session_files_list,
+            commands::session_files_cmd::session_files_get_detail,
+            commands::session_files_cmd::session_files_update_meta,
+            commands::session_files_cmd::session_files_save_file,
+            commands::session_files_cmd::session_files_read_file,
+            commands::session_files_cmd::session_files_delete_file,
+            commands::session_files_cmd::session_files_list_files,
+            commands::session_files_cmd::session_files_cleanup_expired,
+            commands::session_files_cmd::session_files_cleanup_empty,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

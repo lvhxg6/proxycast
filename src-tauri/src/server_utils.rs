@@ -12,6 +12,90 @@ use axum::{
 use futures::stream;
 use std::collections::HashMap;
 
+/// 从错误信息中解析 HTTP 状态码
+///
+/// 用于将上游 API 返回的错误状态码透传给客户端，而不是统一返回 500。
+/// 支持解析常见的 HTTP 状态码：429、403、401、404、400、503、502、500。
+///
+/// # 参数
+/// - `error_message`: 错误信息字符串，通常包含状态码（如 "API call failed: 429 - ..."）
+///
+/// # 返回
+/// 解析出的 HTTP 状态码，如果无法解析则返回 500 INTERNAL_SERVER_ERROR
+///
+/// # 示例
+/// ```
+/// let status = parse_error_status_code("API call failed: 429 Too Many Requests");
+/// assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+/// ```
+pub fn parse_error_status_code(error_message: &str) -> StatusCode {
+    if error_message.contains("429") {
+        StatusCode::TOO_MANY_REQUESTS
+    } else if error_message.contains("403") {
+        StatusCode::FORBIDDEN
+    } else if error_message.contains("401") {
+        StatusCode::UNAUTHORIZED
+    } else if error_message.contains("404") {
+        StatusCode::NOT_FOUND
+    } else if error_message.contains("400") {
+        StatusCode::BAD_REQUEST
+    } else if error_message.contains("503") {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if error_message.contains("502") {
+        StatusCode::BAD_GATEWAY
+    } else if error_message.contains("500") {
+        StatusCode::INTERNAL_SERVER_ERROR
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
+/// 构建错误响应
+///
+/// 从错误信息中解析状态码并构建标准的 JSON 错误响应。
+///
+/// # 参数
+/// - `error_message`: 错误信息字符串
+///
+/// # 返回
+/// 包含正确状态码的 HTTP 响应
+pub fn build_error_response(error_message: &str) -> Response {
+    let status_code = parse_error_status_code(error_message);
+    (
+        status_code,
+        Json(serde_json::json!({
+            "error": {
+                "message": error_message
+            }
+        })),
+    )
+        .into_response()
+}
+
+/// 从 HTTP 状态码构建错误响应
+///
+/// 直接使用状态码构建响应，无需解析字符串。
+/// 适用于已知状态码的场景（如 AntigravityApiError）。
+///
+/// # 参数
+/// - `status_code`: HTTP 状态码（u16）
+/// - `error_message`: 错误信息字符串
+///
+/// # 返回
+/// 包含指定状态码的 HTTP 响应
+pub fn build_error_response_with_status(status_code: u16, error_message: &str) -> Response {
+    let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    (
+        status,
+        Json(serde_json::json!({
+            "error": {
+                "message": error_message
+            }
+        })),
+    )
+        .into_response()
+}
+
 /// CodeWhisperer 响应解析结果
 #[derive(Debug, Default)]
 pub struct CWParsedResponse {
@@ -522,6 +606,63 @@ pub fn build_anthropic_stream_response(model: &str, parsed: &CWParsedResponse) -
         })
 }
 
+/// 构建 Gemini CLI OAuth 请求体
+///
+/// 用于 Gemini OAuth 凭证（Cloud Code Assist API）
+/// 不做模型名称映射，直接使用用户传入的模型名称
+pub fn build_gemini_cli_request(
+    request: &serde_json::Value,
+    model: &str,
+    project_id: &str,
+) -> serde_json::Value {
+    // 是否启用思维链
+    let enable_thinking = model.ends_with("-thinking")
+        || model == "gemini-2.5-pro"
+        || model.starts_with("gemini-3-pro-");
+
+    // 构建内部请求
+    let mut inner_request = request.clone();
+
+    // 确保有 generationConfig
+    if inner_request.get("generationConfig").is_none() {
+        inner_request["generationConfig"] = serde_json::json!({
+            "temperature": 1.0,
+            "maxOutputTokens": 8096,
+            "topP": 0.85,
+            "topK": 50,
+            "candidateCount": 1,
+            "thinkingConfig": {
+                "includeThoughts": enable_thinking,
+                "thinkingBudget": if enable_thinking { 1024 } else { 0 }
+            }
+        });
+    } else {
+        // 确保有 thinkingConfig
+        if inner_request["generationConfig"]
+            .get("thinkingConfig")
+            .is_none()
+        {
+            inner_request["generationConfig"]["thinkingConfig"] = serde_json::json!({
+                "includeThoughts": enable_thinking,
+                "thinkingBudget": if enable_thinking { 1024 } else { 0 }
+            });
+        }
+    }
+
+    // 删除安全设置（Cloud Code Assist 不支持）
+    if let Some(obj) = inner_request.as_object_mut() {
+        obj.remove("safetySettings");
+    }
+
+    // 构建完整的 Gemini CLI 请求体
+    // 格式与 CLIProxyAPI 对齐
+    serde_json::json!({
+        "project": project_id,
+        "model": model,  // 直接使用模型名称，不做映射
+        "request": inner_request
+    })
+}
+
 /// 构建 Gemini 原生请求体
 ///
 /// 将用户传入的 Gemini 格式请求转换为 Antigravity 请求格式
@@ -620,7 +761,7 @@ pub async fn health() -> impl IntoResponse {
     }))
 }
 
-/// 模型列表端点响应
+/// 模型列表端点响应（静态列表，用于不指定凭证的情况）
 pub async fn models() -> impl IntoResponse {
     Json(serde_json::json!({
         "object": "list",
@@ -785,7 +926,7 @@ mod property_tests {
             let response = build_anthropic_response(&model, &parsed);
 
             // 获取响应体
-            let (parts, body) = response.into_parts();
+            let (parts, _body) = response.into_parts();
 
             // 验证状态码为 200
             prop_assert_eq!(parts.status, StatusCode::OK);
@@ -1073,6 +1214,7 @@ mod property_tests {
     // ========================================================================
 
     /// 获取模型名称映射的预期结果
+    #[allow(dead_code)]
     fn get_expected_model_mapping(model: &str) -> &str {
         match model {
             "gemini-2.5-computer-use-preview-10-2025" => "rev19-uic3-1p",

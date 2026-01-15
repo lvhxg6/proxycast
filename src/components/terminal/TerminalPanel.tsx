@@ -172,7 +172,14 @@ export function TerminalPanel({
     return true;
   }, []);
 
+  // 使用 ref 存储回调，避免回调变化导致终端重建
+  const onStatusChangeRef = useRef(onStatusChange);
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
+
   // 当 sessionId 变化时，创建 TermWrap
+  // 注意：只依赖 sessionId 和 handleTerminalKeydown，避免回调变化导致终端重建
   useEffect(() => {
     const container = connectElemRef.current;
     if (!container || !sessionId) {
@@ -183,10 +190,9 @@ export function TerminalPanel({
       return;
     }
 
-    // 销毁旧的 TermWrap
+    // 如果已有 TermWrap 且 sessionId 相同，不重建
     if (termWrapRef.current) {
-      termWrapRef.current.dispose();
-      termWrapRef.current = null;
+      return;
     }
 
     // 清空容器
@@ -194,7 +200,7 @@ export function TerminalPanel({
 
     // 创建新的 TermWrap
     const termWrap = new TermWrap(sessionId, container, {
-      onStatusChange: (status) => onStatusChange?.(status),
+      onStatusChange: (status) => onStatusChangeRef.current?.(status),
       themeName: loadThemePreference(),
       fontSize: loadFontSizePreference(),
       keydownHandler: handleTerminalKeydown,
@@ -218,7 +224,7 @@ export function TerminalPanel({
       termWrap.dispose();
       rszObs.disconnect();
     };
-  }, [sessionId, handleTerminalKeydown, onStatusChange]);
+  }, [sessionId, handleTerminalKeydown]);
 
   // 组件卸载时关闭会话
   useEffect(() => {

@@ -14,6 +14,7 @@
 //! - `prompt`: 工具 Prompt 生成器（System Prompt 工具注入）
 
 pub mod bash;
+pub mod browser;
 pub mod edit_file;
 pub mod prompt;
 pub mod read_file;
@@ -25,6 +26,7 @@ pub mod types;
 pub mod write_file;
 
 pub use bash::{BashExecutionResult, BashTool, ShellType};
+pub use browser::{BrowserAction, BrowserResult, BrowserTool};
 pub use edit_file::{EditFileResult, EditFileTool, UndoResult};
 pub use prompt::{generate_tools_prompt, PromptFormat, ToolPromptGenerator};
 pub use read_file::{ReadFileResult, ReadFileTool};

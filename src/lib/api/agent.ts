@@ -5,7 +5,7 @@
  * 支持流式输出和工具调用
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { safeInvoke } from "@/lib/dev-bridge";
 
 // ============================================================
 // 流式事件类型 (Requirements: 9.1, 9.2, 9.3)
@@ -227,21 +227,21 @@ export interface ImageInput {
  * 启动 Agent（初始化原生 Agent）
  */
 export async function startAgentProcess(): Promise<AgentProcessStatus> {
-  return await invoke("agent_start_process", {});
+  return await safeInvoke("agent_start_process", {});
 }
 
 /**
  * 停止 Agent
  */
 export async function stopAgentProcess(): Promise<void> {
-  return await invoke("agent_stop_process");
+  return await safeInvoke("agent_stop_process");
 }
 
 /**
  * 获取 Agent 状态
  */
 export async function getAgentProcessStatus(): Promise<AgentProcessStatus> {
-  return await invoke("agent_get_process_status");
+  return await safeInvoke("agent_get_process_status");
 }
 
 /**
@@ -262,7 +262,7 @@ export async function createAgentSession(
   systemPrompt?: string,
   skills?: SkillInfo[],
 ): Promise<CreateSessionResponse> {
-  return await invoke("agent_create_session", {
+  return await safeInvoke("agent_create_session", {
     providerType,
     model,
     systemPrompt,
@@ -281,7 +281,7 @@ export async function sendAgentMessage(
   webSearch?: boolean,
   thinking?: boolean,
 ): Promise<string> {
-  return await invoke("agent_send_message", {
+  return await safeInvoke("agent_send_message", {
     sessionId,
     message,
     images,
@@ -315,7 +315,7 @@ export async function sendAgentMessageStream(
   provider?: string,
   terminalMode?: boolean,
 ): Promise<void> {
-  return await invoke("native_agent_chat_stream", {
+  return await safeInvoke("native_agent_chat_stream", {
     message,
     eventName,
     sessionId,
@@ -330,14 +330,14 @@ export async function sendAgentMessageStream(
  * 获取会话列表
  */
 export async function listAgentSessions(): Promise<SessionInfo[]> {
-  return await invoke("agent_list_sessions");
+  return await safeInvoke("agent_list_sessions");
 }
 
 /**
  * 获取会话详情
  */
 export async function getAgentSession(sessionId: string): Promise<SessionInfo> {
-  return await invoke("agent_get_session", {
+  return await safeInvoke("agent_get_session", {
     sessionId,
   });
 }
@@ -346,7 +346,7 @@ export async function getAgentSession(sessionId: string): Promise<SessionInfo> {
  * 删除会话
  */
 export async function deleteAgentSession(sessionId: string): Promise<void> {
-  return await invoke("agent_delete_session", {
+  return await safeInvoke("agent_delete_session", {
     sessionId,
   });
 }
@@ -390,7 +390,7 @@ export interface AgentMessage {
 export async function getAgentSessionMessages(
   sessionId: string,
 ): Promise<AgentMessage[]> {
-  return await invoke("agent_get_session_messages", {
+  return await safeInvoke("agent_get_session_messages", {
     sessionId,
   });
 }
@@ -433,7 +433,7 @@ export async function initGooseAgent(
   providerName: string,
   modelName: string,
 ): Promise<GooseAgentStatus> {
-  return await invoke("goose_agent_init", {
+  return await safeInvoke("goose_agent_init", {
     providerName,
     modelName,
   });
@@ -443,14 +443,14 @@ export async function initGooseAgent(
  * 获取 Goose Agent 状态
  */
 export async function getGooseAgentStatus(): Promise<GooseAgentStatus> {
-  return await invoke("goose_agent_status");
+  return await safeInvoke("goose_agent_status");
 }
 
 /**
  * 重置 Goose Agent
  */
 export async function resetGooseAgent(): Promise<void> {
-  return await invoke("goose_agent_reset");
+  return await safeInvoke("goose_agent_reset");
 }
 
 /**
@@ -459,7 +459,7 @@ export async function resetGooseAgent(): Promise<void> {
 export async function createGooseSession(
   name?: string,
 ): Promise<GooseCreateSessionResponse> {
-  return await invoke("goose_agent_create_session", { name });
+  return await safeInvoke("goose_agent_create_session", { name });
 }
 
 /**
@@ -472,7 +472,7 @@ export async function sendGooseMessage(
   message: string,
   eventName: string,
 ): Promise<void> {
-  return await invoke("goose_agent_send_message", {
+  return await safeInvoke("goose_agent_send_message", {
     request: {
       session_id: sessionId,
       message,
@@ -487,14 +487,162 @@ export async function sendGooseMessage(
 export async function extendGooseSystemPrompt(
   instruction: string,
 ): Promise<void> {
-  return await invoke("goose_agent_extend_system_prompt", { instruction });
+  return await safeInvoke("goose_agent_extend_system_prompt", { instruction });
 }
 
 /**
  * 获取 Goose 支持的 Provider 列表
  */
 export async function listGooseProviders(): Promise<GooseProviderInfo[]> {
-  return await invoke("goose_agent_list_providers");
+  return await safeInvoke("goose_agent_list_providers");
+}
+
+// ============================================================
+// Aster Agent API (基于 Aster 框架的 Agent 实现)
+// ============================================================
+
+/**
+ * Aster Agent 状态
+ */
+export interface AsterAgentStatus {
+  initialized: boolean;
+  provider_configured: boolean;
+  provider_name?: string;
+  model_name?: string;
+}
+
+/**
+ * Aster Provider 配置
+ */
+export interface AsterProviderConfig {
+  provider_name: string;
+  model_name: string;
+  api_key?: string;
+  base_url?: string;
+}
+
+/**
+ * Aster 会话信息
+ */
+export interface AsterSessionInfo {
+  id: string;
+  name?: string;
+  created_at: string;
+  updated_at: string;
+  messages_count: number;
+}
+
+/**
+ * Aster 会话详情
+ */
+export interface AsterSessionDetail {
+  id: string;
+  name?: string;
+  messages: Array<{
+    role: string;
+    content: string;
+    timestamp: string;
+  }>;
+}
+
+/**
+ * 初始化 Aster Agent
+ */
+export async function initAsterAgent(): Promise<AsterAgentStatus> {
+  return await safeInvoke("aster_agent_init");
+}
+
+/**
+ * 获取 Aster Agent 状态
+ */
+export async function getAsterAgentStatus(): Promise<AsterAgentStatus> {
+  return await safeInvoke("aster_agent_status");
+}
+
+/**
+ * 配置 Aster Agent 的 Provider
+ */
+export async function configureAsterProvider(
+  config: AsterProviderConfig,
+  sessionId: string,
+): Promise<AsterAgentStatus> {
+  return await safeInvoke("aster_agent_configure_provider", {
+    request: config,
+    session_id: sessionId,
+  });
+}
+
+/**
+ * 发送消息到 Aster Agent (流式响应)
+ *
+ * 通过 Tauri 事件接收响应流
+ */
+export async function sendAsterMessageStream(
+  message: string,
+  sessionId: string,
+  eventName: string,
+  images?: ImageInput[],
+  providerConfig?: AsterProviderConfig,
+): Promise<void> {
+  return await safeInvoke("aster_agent_chat_stream", {
+    request: {
+      message,
+      session_id: sessionId,
+      event_name: eventName,
+      images,
+      provider_config: providerConfig,
+    },
+  });
+}
+
+/**
+ * 停止 Aster Agent 会话
+ */
+export async function stopAsterSession(sessionId: string): Promise<boolean> {
+  return await safeInvoke("aster_agent_stop", { sessionId });
+}
+
+/**
+ * 创建 Aster 会话
+ */
+export async function createAsterSession(
+  workingDir?: string,
+  name?: string,
+): Promise<string> {
+  return await safeInvoke("aster_session_create", { workingDir, name });
+}
+
+/**
+ * 获取 Aster 会话列表
+ */
+export async function listAsterSessions(): Promise<AsterSessionInfo[]> {
+  return await safeInvoke("aster_session_list");
+}
+
+/**
+ * 获取 Aster 会话详情
+ */
+export async function getAsterSession(
+  sessionId: string,
+): Promise<AsterSessionDetail> {
+  return await safeInvoke("aster_session_get", { sessionId });
+}
+
+/**
+ * 确认 Aster Agent 权限请求
+ */
+export async function confirmAsterAction(
+  requestId: string,
+  confirmed: boolean,
+  response?: string,
+): Promise<void> {
+  return await safeInvoke("aster_agent_confirm", {
+    request: {
+      request_id: requestId,
+      confirmed,
+      response,
+    },
+  });
 }
 
 // ============================================================
@@ -541,7 +689,7 @@ export interface TerminalCommandResponse {
 export async function sendTerminalCommandResponse(
   response: TerminalCommandResponse,
 ): Promise<void> {
-  return await invoke("agent_terminal_command_response", {
+  return await safeInvoke("agent_terminal_command_response", {
     requestId: response.request_id,
     success: response.success,
     output: response.output,
@@ -599,7 +747,7 @@ export interface TermScrollbackResponse {
 export async function sendTermScrollbackResponse(
   response: TermScrollbackResponse,
 ): Promise<void> {
-  return await invoke("agent_term_scrollback_response", {
+  return await safeInvoke("agent_term_scrollback_response", {
     requestId: response.request_id,
     success: response.success,
     totalLines: response.total_lines,

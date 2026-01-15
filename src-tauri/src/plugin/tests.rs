@@ -171,6 +171,40 @@ fn test_plugin_manifest_serde() {
     assert_eq!(parsed.hooks.len(), 2);
 }
 
+#[test]
+fn test_machine_id_tool_manifest_parsing() {
+    // 测试 machine-id-tool 的 plugin.json 格式
+    let json = r#"{
+        "name": "machine-id-tool",
+        "version": "0.4.0",
+        "description": "Machine ID 管理工具",
+        "author": "ProxyCast Team",
+        "homepage": "https://github.com/aiclientproxy/MachineIdTool",
+        "license": "MIT",
+        "plugin_type": "script",
+        "entry": "config.json",
+        "min_proxycast_version": "1.0.0",
+        "ui": {
+            "surfaces": ["tools", "sidebar"],
+            "entry": "dist/index.js",
+            "icon": "Cpu",
+            "title": "机器码管理工具",
+            "description": "查看、修改和管理系统机器码"
+        }
+    }"#;
+
+    let manifest: PluginManifest = serde_json::from_str(json).unwrap();
+    assert_eq!(manifest.name, "machine-id-tool");
+    assert_eq!(manifest.version, "0.4.0");
+    assert_eq!(manifest.plugin_type, PluginType::Script);
+    assert!(manifest.ui.is_some());
+
+    let ui = manifest.ui.unwrap();
+    assert_eq!(ui.surfaces, vec!["tools", "sidebar"]);
+    assert_eq!(ui.entry, Some("dist/index.js".to_string()));
+    assert_eq!(ui.icon, Some("Cpu".to_string()));
+}
+
 // Property-based tests
 use proptest::prelude::*;
 
@@ -181,7 +215,7 @@ use proptest::prelude::*;
 mod property_tests {
     use super::*;
     use crate::plugin::manager::{PluginManager, PluginManagerConfig};
-    use std::path::PathBuf;
+
     use tempfile::TempDir;
 
     /// 生成随机的请求 JSON

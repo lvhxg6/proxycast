@@ -8,13 +8,14 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import styled from "styled-components";
 import { useAgentChat } from "./hooks/useAgentChat";
+import { useSessionFiles } from "./hooks/useSessionFiles";
 import { ChatNavbar } from "./components/ChatNavbar";
 import { ChatSidebar } from "./components/ChatSidebar";
 import { ChatSettings } from "./components/ChatSettings";
 import { MessageList } from "./components/MessageList";
 import { Inputbar } from "./components/Inputbar";
 import { EmptyState, CreationMode } from "./components/EmptyState";
-import { TaskFileList, type TaskFile } from "./components/TaskFiles";
+import { type TaskFile } from "./components/TaskFiles";
 import { LayoutTransition } from "@/components/content-creator/core/LayoutTransition/LayoutTransition";
 import { StepProgress } from "@/components/content-creator/core/StepGuide/StepProgress";
 import { useWorkflow } from "@/components/content-creator/hooks/useWorkflow";
@@ -25,6 +26,8 @@ import {
   type CanvasStateUnion,
 } from "@/components/content-creator/canvas/canvasUtils";
 import { createInitialDocumentState } from "@/components/content-creator/canvas/document";
+import { createInitialMusicState } from "@/components/content-creator/canvas/music/types";
+import { parseLyrics } from "@/components/content-creator/canvas/music/utils/lyricsParser";
 import {
   generateContentCreationPrompt,
   isContentCreationTheme,
@@ -86,6 +89,7 @@ const THEME_MAP: Record<string, ThemeType> = {
   image: "poster",
   office: "document",
   video: "video",
+  music: "music",
 };
 
 export function AgentChatPage({
@@ -161,6 +165,122 @@ export function AgentChatPage({
     },
   });
 
+  // 会话文件持久化 hook
+  const {
+    saveFile: saveSessionFile,
+    files: sessionFiles,
+    readFile: readSessionFile,
+    meta: sessionMeta,
+  } = useSessionFiles({
+    sessionId,
+    theme: mappedTheme,
+    creationMode,
+    autoInit: true,
+  });
+
+  // 追踪已恢复元数据和文件的会话 ID
+  const restoredMetaSessionId = useRef<string | null>(null);
+  const restoredFilesSessionId = useRef<string | null>(null);
+
+  // 当 sessionMeta 加载完成时，恢复主题和创建模式
+  useEffect(() => {
+    if (!sessionId || !sessionMeta) {
+      return;
+    }
+
+    // 检查 sessionMeta 是否属于当前 sessionId
+    if (sessionMeta.sessionId !== sessionId) {
+      return;
+    }
+
+    // 避免重复恢复
+    if (restoredMetaSessionId.current === sessionId) {
+      return;
+    }
+
+    console.log("[AgentChatPage] 恢复会话元数据:", sessionId, sessionMeta);
+
+    // 从会话元数据恢复主题
+    if (sessionMeta.theme) {
+      const themeEntry = Object.entries(THEME_MAP).find(
+        ([_, v]) => v === sessionMeta.theme,
+      );
+      if (themeEntry) {
+        console.log("[AgentChatPage] 恢复主题:", themeEntry[0]);
+        setActiveTheme(themeEntry[0]);
+      }
+    }
+
+    // 从会话元数据恢复创建模式
+    if (sessionMeta.creationMode) {
+      console.log("[AgentChatPage] 恢复创建模式:", sessionMeta.creationMode);
+      setCreationMode(sessionMeta.creationMode as CreationMode);
+    }
+
+    restoredMetaSessionId.current = sessionId;
+  }, [sessionId, sessionMeta]);
+
+  // 当 sessionFiles 加载完成时，恢复文件到 taskFiles
+  useEffect(() => {
+    if (!sessionId || sessionFiles.length === 0) {
+      return;
+    }
+
+    // 避免重复恢复
+    if (restoredFilesSessionId.current === sessionId) {
+      return;
+    }
+
+    // 如果当前已有 taskFiles，说明是本次会话新生成的文件，不需要从持久化恢复
+    if (taskFiles.length > 0) {
+      restoredFilesSessionId.current = sessionId;
+      return;
+    }
+
+    console.log(
+      "[AgentChatPage] 开始恢复文件:",
+      sessionId,
+      sessionFiles.length,
+      "个文件",
+    );
+
+    // 恢复文件到 taskFiles
+    const restoreFiles = async () => {
+      const restoredFiles: TaskFile[] = [];
+
+      for (const file of sessionFiles) {
+        try {
+          const content = await readSessionFile(file.name);
+          if (content) {
+            restoredFiles.push({
+              id: crypto.randomUUID(),
+              name: file.name,
+              type: file.fileType === "document" ? "document" : "document",
+              content,
+              version: 1,
+              createdAt: file.createdAt,
+              updatedAt: file.updatedAt,
+            });
+          }
+        } catch (err) {
+          console.error("[AgentChatPage] 恢复文件失败:", file.name, err);
+        }
+      }
+
+      if (restoredFiles.length > 0) {
+        console.log(
+          "[AgentChatPage] 从持久化存储恢复",
+          restoredFiles.length,
+          "个文件",
+        );
+        setTaskFiles(restoredFiles);
+      }
+      restoredFilesSessionId.current = sessionId;
+    };
+
+    restoreFiles();
+  }, [sessionId, sessionFiles, readSessionFile, taskFiles.length]);
+
   // 包装 switchTopic，在切换话题时重置相关状态
   const switchTopic = useCallback(
     async (topicId: string) => {
@@ -170,6 +290,9 @@ export function AgentChatPage({
       setTaskFiles([]);
       setSelectedFileId(undefined);
       processedMessageIds.current.clear();
+      // 清空已恢复的会话 ID，以便新话题能触发恢复
+      restoredMetaSessionId.current = null;
+      restoredFilesSessionId.current = null;
 
       // 然后调用原始的 switchTopic
       await originalSwitchTopic(topicId);
@@ -281,6 +404,11 @@ export function AgentChatPage({
     setLayoutMode("chat");
     // 恢复侧边栏显示
     setShowSidebar(true);
+    // 清理画布和文件状态
+    setCanvasState(null);
+    setTaskFiles([]);
+    setSelectedFileId(undefined);
+    processedMessageIds.current.clear();
   }, [clearMessages]);
 
   // 当开始对话时自动折叠侧边栏
@@ -290,6 +418,38 @@ export function AgentChatPage({
       setShowSidebar(false);
     }
   }, [hasMessages]);
+
+  // 当有文件时默认在画布中显示最后一个文件
+  useEffect(() => {
+    if (taskFiles.length > 0) {
+      const lastFile = taskFiles[taskFiles.length - 1];
+      // 设置选中的文件
+      setSelectedFileId(lastFile.id);
+      // 如果文件有内容，在画布中显示
+      if (lastFile.content) {
+        setCanvasState((prev) => {
+          if (mappedTheme === "music") {
+            const sections = parseLyrics(lastFile.content!);
+            if (!prev || prev.type !== "music") {
+              const musicState = createInitialMusicState();
+              musicState.sections = sections;
+              const titleMatch = lastFile.content!.match(/^#\s*(.+)$/m);
+              if (titleMatch) {
+                musicState.spec.title = titleMatch[1].trim();
+              }
+              return musicState;
+            }
+            return { ...prev, sections };
+          }
+          if (!prev || prev.type !== "document") {
+            return createInitialDocumentState(lastFile.content!);
+          }
+          return { ...prev, content: lastFile.content! };
+        });
+        setLayoutMode("chat-canvas");
+      }
+    }
+  }, [taskFiles, mappedTheme]);
 
   const handleToggleSidebar = () => {
     setShowSidebar(!showSidebar);
@@ -331,6 +491,11 @@ export function AgentChatPage({
       );
 
       const now = Date.now();
+
+      // 持久化文件到会话目录
+      saveSessionFile(fileName, content).catch((err) => {
+        console.error("[AgentChatPage] 持久化文件失败:", err);
+      });
 
       // 根据文件名推进工作流步骤
       const stepIndex = FILE_TO_STEP_MAP[fileName];
@@ -393,16 +558,46 @@ export function AgentChatPage({
         return [...prev, newFile];
       });
 
-      // 更新画布内容（仅文档类型画布）
+      // 更新画布内容
       setCanvasState((prev) => {
+        console.log("[AgentChatPage] 更新画布状态:", {
+          prevType: prev?.type,
+          mappedTheme,
+          contentLength: content.length,
+        });
+
         // 海报主题不自动更新画布
         if (mappedTheme === "poster") {
           return prev;
         }
 
+        // 音乐主题：解析歌词并更新 sections
+        if (mappedTheme === "music") {
+          const sections = parseLyrics(content);
+          if (!prev || prev.type !== "music") {
+            const musicState = createInitialMusicState();
+            musicState.sections = sections;
+            // 尝试从内容中提取歌曲名称
+            const titleMatch = content.match(/^#\s*(.+)$/m);
+            if (titleMatch) {
+              musicState.spec.title = titleMatch[1].trim();
+            }
+            console.log("[AgentChatPage] 创建新音乐状态");
+            return musicState;
+          }
+          // 更新现有音乐状态的 sections
+          return {
+            ...prev,
+            sections,
+          };
+        }
+
+        // 文档类型画布
         if (!prev || prev.type !== "document") {
+          console.log("[AgentChatPage] 创建新文档状态");
           return createInitialDocumentState(content);
         }
+        console.log("[AgentChatPage] 更新现有文档状态");
         return {
           ...prev,
           content,
@@ -412,7 +607,13 @@ export function AgentChatPage({
       // 自动打开画布显示流式内容
       setLayoutMode("chat-canvas");
     },
-    [currentStepIndex, isContentCreationMode, completeStep, mappedTheme],
+    [
+      currentStepIndex,
+      isContentCreationMode,
+      completeStep,
+      mappedTheme,
+      saveSessionFile,
+    ],
   );
 
   // 更新 ref，供 useAgentChat 使用
@@ -421,62 +622,100 @@ export function AgentChatPage({
   }, [handleWriteFile]);
 
   // 处理文件点击 - 在画布中显示文件内容
-  const handleFileClick = useCallback((fileName: string, content: string) => {
-    console.log("[AgentChatPage] 文件点击:", fileName);
+  const handleFileClick = useCallback(
+    (fileName: string, content: string) => {
+      console.log("[AgentChatPage] 文件点击:", fileName, "主题:", mappedTheme);
 
-    // 查找或创建任务文件
-    setTaskFiles((prev) => {
-      const existingFile = prev.find((f) => f.name === fileName);
-      if (existingFile) {
-        setSelectedFileId(existingFile.id);
-        return prev;
-      }
-      // 如果文件不存在，添加到列表
-      const newFile: TaskFile = {
-        id: crypto.randomUUID(),
-        name: fileName,
-        type: "document",
-        content,
-        version: 1,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      };
-      setSelectedFileId(newFile.id);
-      return [...prev, newFile];
-    });
+      // 查找或创建任务文件
+      setTaskFiles((prev) => {
+        const existingFile = prev.find((f) => f.name === fileName);
+        if (existingFile) {
+          setSelectedFileId(existingFile.id);
+          return prev;
+        }
+        // 如果文件不存在，添加到列表
+        const newFile: TaskFile = {
+          id: crypto.randomUUID(),
+          name: fileName,
+          type: "document",
+          content,
+          version: 1,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        setSelectedFileId(newFile.id);
+        return [...prev, newFile];
+      });
 
-    // 更新画布内容（仅文档类型）
-    setCanvasState((prev) => {
-      if (!prev || prev.type !== "document") {
-        return createInitialDocumentState(content);
-      }
-      return {
-        ...prev,
-        content,
-      };
-    });
-
-    // 打开画布
-    setLayoutMode("chat-canvas");
-  }, []);
-
-  // 处理任务文件点击 - 在画布中显示文件内容
-  const handleTaskFileClick = useCallback((file: TaskFile) => {
-    if (file.type === "document" && file.content) {
-      setSelectedFileId(file.id);
+      // 更新画布内容
       setCanvasState((prev) => {
+        // 音乐主题：解析歌词并更新 sections
+        if (mappedTheme === "music") {
+          const sections = parseLyrics(content);
+          if (!prev || prev.type !== "music") {
+            const musicState = createInitialMusicState();
+            musicState.sections = sections;
+            const titleMatch = content.match(/^#\s*(.+)$/m);
+            if (titleMatch) {
+              musicState.spec.title = titleMatch[1].trim();
+            }
+            return musicState;
+          }
+          return { ...prev, sections };
+        }
+
+        // 文档类型画布
         if (!prev || prev.type !== "document") {
-          return createInitialDocumentState(file.content!);
+          return createInitialDocumentState(content);
         }
         return {
           ...prev,
-          content: file.content!,
+          content,
         };
       });
-      // 只打开画布，不关闭文件列表（让用户自己关闭）
+
+      // 打开画布
       setLayoutMode("chat-canvas");
-    }
-  }, []);
+    },
+    [mappedTheme],
+  );
+
+  // 处理任务文件点击 - 在画布中显示文件内容
+  const handleTaskFileClick = useCallback(
+    (file: TaskFile) => {
+      if (file.type === "document" && file.content) {
+        setSelectedFileId(file.id);
+        setCanvasState((prev) => {
+          // 音乐主题：解析歌词并更新 sections
+          if (mappedTheme === "music") {
+            const sections = parseLyrics(file.content!);
+            if (!prev || prev.type !== "music") {
+              const musicState = createInitialMusicState();
+              musicState.sections = sections;
+              const titleMatch = file.content!.match(/^#\s*(.+)$/m);
+              if (titleMatch) {
+                musicState.spec.title = titleMatch[1].trim();
+              }
+              return musicState;
+            }
+            return { ...prev, sections };
+          }
+
+          // 文档类型画布
+          if (!prev || prev.type !== "document") {
+            return createInitialDocumentState(file.content!);
+          }
+          return {
+            ...prev,
+            content: file.content!,
+          };
+        });
+        // 只打开画布，不关闭文件列表（让用户自己关闭）
+        setLayoutMode("chat-canvas");
+      }
+    },
+    [mappedTheme],
+  );
 
   // A2UI 表单提交处理
   const handleA2UISubmit = useCallback(
@@ -541,16 +780,6 @@ export function AgentChatPage({
 
       {hasMessages && (
         <>
-          {/* 任务文件列表 - 显示在输入框上方 */}
-          {taskFiles.length > 0 && (
-            <TaskFileList
-              files={taskFiles}
-              selectedFileId={selectedFileId}
-              onFileClick={handleTaskFileClick}
-              expanded={taskFilesExpanded}
-              onExpandedChange={setTaskFilesExpanded}
-            />
-          )}
           <Inputbar
             input={input}
             setInput={setInput}
@@ -561,6 +790,11 @@ export function AgentChatPage({
             onClearMessages={handleClearMessages}
             onToggleCanvas={handleToggleCanvas}
             isCanvasOpen={layoutMode === "chat-canvas"}
+            taskFiles={taskFiles}
+            selectedFileId={selectedFileId}
+            taskFilesExpanded={taskFilesExpanded}
+            onToggleTaskFiles={() => setTaskFilesExpanded(!taskFilesExpanded)}
+            onTaskFileClick={handleTaskFileClick}
           />
         </>
       )}
@@ -569,10 +803,24 @@ export function AgentChatPage({
 
   // 画布区域内容
   const canvasContent = useMemo(() => {
-    if (canvasState && isCanvasSupported(mappedTheme)) {
+    console.log("[AgentChatPage] canvasContent 计算:", {
+      canvasState: canvasState ? { type: canvasState.type } : null,
+      mappedTheme,
+      isSupported: isCanvasSupported(mappedTheme),
+      layoutMode,
+    });
+    // 只要有 canvasState 就显示画布（支持显示任意主题的文件）
+    if (canvasState) {
+      // 根据 canvasState.type 确定使用的主题
+      const effectiveTheme: ThemeType =
+        canvasState.type === "music"
+          ? "music"
+          : canvasState.type === "poster"
+            ? "poster"
+            : "document";
       return (
         <CanvasFactory
-          theme={mappedTheme}
+          theme={effectiveTheme}
           state={canvasState}
           onStateChange={setCanvasState}
           onClose={handleCloseCanvas}
@@ -581,7 +829,7 @@ export function AgentChatPage({
       );
     }
     return null;
-  }, [canvasState, mappedTheme, handleCloseCanvas, isSending]);
+  }, [canvasState, mappedTheme, handleCloseCanvas, isSending, layoutMode]);
 
   return (
     <PageContainer>

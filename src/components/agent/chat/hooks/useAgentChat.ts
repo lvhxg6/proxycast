@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { toast } from "sonner";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { safeListen } from "@/lib/dev-bridge";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   startAgentProcess,
   stopAgentProcess,
@@ -31,6 +32,50 @@ export interface Topic {
   createdAt: Date;
   messagesCount: number;
 }
+
+// 音效播放器（模块级别单例）
+let toolcallAudio: HTMLAudioElement | null = null;
+let typewriterAudio: HTMLAudioElement | null = null;
+let lastTypewriterTime = 0;
+const TYPEWRITER_INTERVAL = 120;
+
+const initAudio = () => {
+  if (!toolcallAudio) {
+    toolcallAudio = new Audio("/sounds/tool-call.mp3");
+    toolcallAudio.volume = 1;
+    toolcallAudio.load();
+  }
+  if (!typewriterAudio) {
+    typewriterAudio = new Audio("/sounds/typing.mp3");
+    typewriterAudio.volume = 0.6;
+    typewriterAudio.load();
+  }
+};
+
+const getSoundEnabled = (): boolean => {
+  return localStorage.getItem("proxycast_sound_enabled") === "true";
+};
+
+const playToolcallSound = () => {
+  if (!getSoundEnabled()) return;
+  initAudio();
+  if (toolcallAudio) {
+    toolcallAudio.currentTime = 0;
+    toolcallAudio.play().catch(console.error);
+  }
+};
+
+const playTypewriterSound = () => {
+  if (!getSoundEnabled()) return;
+  const now = Date.now();
+  if (now - lastTypewriterTime < TYPEWRITER_INTERVAL) return;
+  initAudio();
+  if (typewriterAudio) {
+    typewriterAudio.currentTime = 0;
+    typewriterAudio.play().catch(console.error);
+    lastTypewriterTime = now;
+  }
+};
 
 // Helper for localStorage (Persistent across reloads)
 const loadPersisted = <T>(key: string, defaultValue: T): T => {
@@ -134,6 +179,8 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
     const loadConfig = async () => {
       try {
         const config = await getProviderConfig();
+        console.log("[useAgentChat] 加载模型配置成功:", config);
+        console.log("[useAgentChat] codex 模型列表:", config.codex?.models);
         setProviderConfig(config);
       } catch (error) {
         console.warn("加载模型配置失败，使用默认配置:", error);
@@ -230,7 +277,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
     let unlisten: UnlistenFn | null = null;
 
     const setupListener = async () => {
-      unlisten = await listen<{
+      unlisten = await safeListen<{
         message: string;
         image_path: string | null;
         image_base64: string | null;
@@ -403,7 +450,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
       console.log(
         `[AgentChat] 设置事件监听器: ${eventName}, sessionId: ${activeSessionId}`,
       );
-      unlisten = await listen<StreamEvent>(eventName, (event) => {
+      unlisten = await safeListen<StreamEvent>(eventName, (event) => {
         console.log("[AgentChat] 收到事件:", eventName, event.payload);
         const data = parseStreamEvent(event.payload);
         if (!data) {
@@ -416,6 +463,10 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
           case "text_delta":
             // 累积文本并实时更新 UI（同时更新 content 和 contentParts）
             accumulatedContent += data.text;
+
+            // 播放打字机音效
+            playTypewriterSound();
+
             setMessages((prev) =>
               prev.map((msg) =>
                 msg.id === assistantMsgId
@@ -508,6 +559,10 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
           case "tool_start": {
             // 工具开始执行 - 添加到工具调用列表和 contentParts
             console.log(`[Tool Start] ${data.tool_name} (${data.tool_id})`);
+
+            // 播放工具调用音效
+            playToolcallSound();
+
             const newToolCall = {
               id: data.tool_id,
               name: data.tool_name,

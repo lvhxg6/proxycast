@@ -29,6 +29,9 @@ fn create_http_client() -> Client {
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(600)) // 10 分钟总超时，支持长时间流式响应
         .tcp_keepalive(Duration::from_secs(60)) // TCP keepalive 保持连接活跃
+        .gzip(true) // 自动解压 gzip 响应
+        .brotli(true) // 自动解压 brotli 响应
+        .deflate(true) // 自动解压 deflate 响应
         .build()
         .unwrap_or_else(|_| Client::new())
 }

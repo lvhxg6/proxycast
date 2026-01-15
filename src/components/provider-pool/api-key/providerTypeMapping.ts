@@ -20,7 +20,7 @@ const PROVIDER_ID_TO_REGISTRY_ID: Record<string, string> = {
   // 主流 AI
   openai: "openai",
   anthropic: "anthropic",
-  gemini: "google",
+  gemini: "gemini",
   deepseek: "deepseek",
   moonshot: "moonshot",
   groq: "groq",
@@ -45,6 +45,8 @@ const PROVIDER_ID_TO_REGISTRY_ID: Record<string, string> = {
   "aws-bedrock": "anthropic",
   // 代理服务
   iflow: "deepseek", // iFlow 是 DeepSeek 的代理
+  antigravity: "antigravity", // Antigravity 使用自己的模型列表
+  codex: "codex", // Codex 使用自己的模型列表
   // 其他
   ollama: "ollama",
   together: "together",
@@ -58,9 +60,10 @@ const PROVIDER_ID_TO_REGISTRY_ID: Record<string, string> = {
  */
 const PROVIDER_TYPE_TO_REGISTRY_ID: Record<string, string> = {
   anthropic: "anthropic",
+  "anthropic-compatible": "anthropic", // Anthropic 兼容格式
   openai: "openai",
   "openai-response": "openai",
-  gemini: "google",
+  gemini: "gemini",
 };
 
 /**

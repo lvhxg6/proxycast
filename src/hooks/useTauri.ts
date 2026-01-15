@@ -1,28 +1,5 @@
-// Safe Tauri invoke wrapper for web mode compatibility
-const safeInvoke = async (cmd: string, args?: any): Promise<any> => {
-  // Check if Tauri is available via window.__TAURI__
-  if (
-    typeof window !== "undefined" &&
-    (window as any).__TAURI__?.core?.invoke
-  ) {
-    return (window as any).__TAURI__.core.invoke(cmd, args);
-  }
-
-  // Legacy check for older Tauri versions
-  if (typeof window !== "undefined" && (window as any).__TAURI__?.invoke) {
-    return (window as any).__TAURI__.invoke(cmd, args);
-  }
-
-  // Try to use real Tauri API (dynamic import)
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    return invoke(cmd, args);
-  } catch (_e) {
-    // Not in Tauri environment, return mock data for development
-    console.warn(`[useTauri] Tauri API not available for command: ${cmd}`);
-    throw new Error(`Tauri API not available. Command: ${cmd}`);
-  }
-};
+// 使用共享的 safeInvoke
+import { safeInvoke } from "@/lib/dev-bridge";
 
 export interface ServerStatus {
   running: boolean;
@@ -230,6 +207,28 @@ export async function getDefaultProvider(): Promise<string> {
 
 export async function setDefaultProvider(provider: string): Promise<string> {
   return safeInvoke("set_default_provider", { provider });
+}
+
+/**
+ * 更新 Provider 的环境变量
+ *
+ * 当用户在 API Server 页面选择一个 API Key Provider 时调用
+ * 会更新 ~/.claude/settings.json 和 shell 配置文件中的环境变量
+ *
+ * @param providerType Provider 类型（如 "anthropic", "openai", "gemini"）
+ * @param apiHost Provider 的 API Host
+ * @param apiKey 可选的 API Key
+ */
+export async function updateProviderEnvVars(
+  providerType: string,
+  apiHost: string,
+  apiKey?: string,
+): Promise<void> {
+  return safeInvoke("update_provider_env_vars", {
+    providerType,
+    apiHost,
+    apiKey: apiKey || null,
+  });
 }
 
 export async function refreshKiroToken(): Promise<string> {

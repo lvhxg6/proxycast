@@ -59,6 +59,7 @@ import {
   type ThemeName,
   loadThemePreference,
   loadFontSizePreference,
+  getTheme,
 } from "@/lib/terminal/themes";
 import "./terminal.css";
 
@@ -170,6 +171,13 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
   // Refs
   const connectElemRef = useRef<HTMLDivElement>(null);
   const termWrapRef = useRef<TermWrap | null>(null);
+  // 使用 ref 存储回调，避免回调变化导致终端重建
+  const onStatusChangeRef = useRef(onStatusChange);
+
+  // 更新回调 ref
+  useEffect(() => {
+    onStatusChangeRef.current = onStatusChange;
+  }, [onStatusChange]);
 
   // 初始化主题和字体大小
   useEffect(() => {
@@ -299,16 +307,16 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
 
   // ============================================================================
   // TermWrap 生命周期管理
+  // 注意：只依赖 blockId，避免主题/字体/回调变化导致终端重建
   // ============================================================================
 
   useEffect(() => {
     const container = connectElemRef.current;
     if (!container) return;
 
-    // 销毁旧的 TermWrap
+    // 如果已有 TermWrap，不重建
     if (termWrapRef.current) {
-      termWrapRef.current.dispose();
-      termWrapRef.current = null;
+      return;
     }
 
     // 清空容器
@@ -317,7 +325,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
     // 创建新的 TermWrap
     const termWrap = new TermWrap(blockId, container, {
       onStatusChange: (status) => {
-        onStatusChange?.(status);
+        onStatusChangeRef.current?.(status);
       },
       themeName: themeName as ThemeName,
       fontSize: fontSize,
@@ -340,11 +348,27 @@ export const TerminalView: React.FC<TerminalViewProps> = ({
 
     return () => {
       termWrap.dispose();
+      termWrapRef.current = null;
       rszObs.disconnect();
     };
-    // 注意：handleTerminalKeydown 使用 useCallback 且无依赖，不会导致重新创建
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [blockId, themeName, fontSize, onStatusChange]);
+  }, [blockId]);
+
+  // 主题变化时更新终端（不重建）
+  useEffect(() => {
+    if (termWrapRef.current?.terminal) {
+      const themeConfig = getTheme(themeName as ThemeName);
+      termWrapRef.current.terminal.options.theme = themeConfig;
+    }
+  }, [themeName]);
+
+  // 字体大小变化时更新终端（不重建）
+  useEffect(() => {
+    if (termWrapRef.current?.terminal) {
+      termWrapRef.current.terminal.options.fontSize = fontSize;
+      termWrapRef.current.handleResize_debounced();
+    }
+  }, [fontSize]);
 
   // 清理 TermViewModel
   useEffect(() => {

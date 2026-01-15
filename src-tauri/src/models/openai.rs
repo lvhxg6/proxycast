@@ -58,6 +58,10 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// 推理内容（DeepSeek R1 等模型的思维链内容）
+    /// DeepSeek Reasoner 在 Tool Calls 场景下要求此字段
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {

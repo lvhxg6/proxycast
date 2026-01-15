@@ -88,7 +88,7 @@ fn get_shell_config_path() -> Result<PathBuf, Box<dyn std::error::Error + Send +
 
 /// 将环境变量写入 shell 配置文件
 /// 使用标记块管理，避免重复添加
-pub(crate) fn write_env_to_shell_config(
+pub fn write_env_to_shell_config(
     env_vars: &[(String, String)],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_path = get_shell_config_path()?;

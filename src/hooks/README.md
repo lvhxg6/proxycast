@@ -25,6 +25,7 @@ React 自定义 Hooks，封装业务逻辑和状态管理。
 - `useProviderState.ts` - Provider 状态 Hook
 - `useRelayRegistry.ts` - Relay Registry 管理 Hook（Requirements 2.1, 7.2, 7.3）
 - `useSkills.ts` - 技能管理 Hook
+- `useSound.ts` - 音效管理 Hook（工具调用和打字机音效）
 - `useSwitch.ts` - 开关状态 Hook
 - `useTauri.ts` - Tauri 通用 Hook
 - `useWindowResize.ts` - 窗口大小 Hook

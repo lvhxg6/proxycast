@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::agent::AsterAgentState;
 use crate::agent::NativeAgentState;
 use crate::commands::api_key_provider_cmd::ApiKeyProviderServiceState;
 use crate::commands::connect_cmd::ConnectStateWrapper;
@@ -20,6 +21,7 @@ use crate::commands::plugin_cmd::PluginManagerState;
 use crate::commands::plugin_install_cmd::PluginInstallerState;
 use crate::commands::provider_pool_cmd::{CredentialSyncServiceState, ProviderPoolServiceState};
 use crate::commands::resilience_cmd::ResilienceConfigState;
+use crate::commands::session_files_cmd::SessionFilesState;
 use crate::commands::skill_cmd::SkillServiceState;
 use crate::commands::terminal_cmd::TerminalManagerState;
 use crate::commands::webview_cmd::{WebviewManagerState, WebviewManagerWrapper};
@@ -86,19 +88,12 @@ pub fn load_and_validate_config() -> Result<Config, ConfigError> {
         return Err(ConfigError::InvalidHost);
     }
 
-    let is_non_local = is_non_local_bind(&config.server.host);
-
-    // 如果是本地绑定且使用默认 API key，自动生成新密钥
-    if !is_non_local && config.server.api_key == config::DEFAULT_API_KEY {
+    // 如果使用默认 API key，自动生成新密钥
+    if config.server.api_key == config::DEFAULT_API_KEY {
         let new_key = generate_api_key();
         config.server.api_key = new_key;
         config::save_config(&config).map_err(|e| ConfigError::SaveFailed(e.to_string()))?;
         tracing::info!("检测到默认 API key，已自动生成并保存新密钥");
-    }
-
-    // 如果是非本地绑定，必须使用非默认 API key
-    if is_non_local && config.server.api_key == config::DEFAULT_API_KEY {
-        return Err(ConfigError::DefaultApiKeyWithNonLocalBind);
     }
 
     // 检查 TLS 配置
@@ -140,6 +135,7 @@ pub struct AppStates {
     pub enhanced_stats_service: EnhancedStatsServiceState,
     pub batch_operations: BatchOperationsState,
     pub native_agent: NativeAgentState,
+    pub aster_agent: AsterAgentState,
     pub oauth_plugin_manager: crate::commands::oauth_plugin_cmd::OAuthPluginManagerState,
     pub orchestrator: OrchestratorState,
     pub connect_state: ConnectStateWrapper,
@@ -148,6 +144,7 @@ pub struct AppStates {
     pub terminal_manager: TerminalManagerState,
     pub webview_manager: WebviewManagerWrapper,
     pub update_check_service: UpdateCheckServiceState,
+    pub session_files: SessionFilesState,
     // 用于 setup hook 的共享实例
     pub shared_stats: Arc<parking_lot::RwLock<telemetry::StatsAggregator>>,
     pub shared_tokens: Arc<parking_lot::RwLock<telemetry::TokenTracker>>,
@@ -218,6 +215,7 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
 
     // 其他状态
     let native_agent_state = NativeAgentState::new();
+    let aster_agent_state = AsterAgentState::new();
     let oauth_plugin_manager_state =
         crate::commands::oauth_plugin_cmd::OAuthPluginManagerState::with_defaults();
     let orchestrator_state = OrchestratorState::new();
@@ -237,6 +235,11 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
 
     // 初始化更新检查服务
     let update_check_service_state = UpdateCheckServiceState::new();
+
+    // 初始化会话文件存储
+    let session_files_storage = crate::session_files::SessionFileStorage::new()
+        .map_err(|e| format!("SessionFileStorage 初始化失败: {}", e))?;
+    let session_files_state = SessionFilesState(std::sync::Mutex::new(session_files_storage));
 
     // 初始化全局配置管理器
     let config_path = ConfigManager::default_config_path();
@@ -275,6 +278,7 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
         enhanced_stats_service: enhanced_stats_service_state,
         batch_operations: batch_operations_state,
         native_agent: native_agent_state,
+        aster_agent: aster_agent_state,
         oauth_plugin_manager: oauth_plugin_manager_state,
         orchestrator: orchestrator_state,
         connect_state,
@@ -283,6 +287,7 @@ pub fn init_states(config: &Config) -> Result<AppStates, String> {
         terminal_manager: terminal_manager_state,
         webview_manager: webview_manager_state,
         update_check_service: update_check_service_state,
+        session_files: session_files_state,
         shared_stats,
         shared_tokens,
         shared_logger,

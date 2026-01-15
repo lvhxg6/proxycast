@@ -201,10 +201,11 @@ function getSurfaceStyles(surface: SurfaceState): React.CSSProperties {
 /**
  * 单个组件渲染器
  */
-interface ComponentRendererInternalProps extends Omit<
-  ComponentRendererProps,
-  "resolveValue" | "renderChild" | "renderChildren"
-> {
+interface ComponentRendererInternalProps
+  extends Omit<
+    ComponentRendererProps,
+    "resolveValue" | "renderChild" | "renderChildren"
+  > {
   resolveValue: <T>(bound: BoundValue<T>) => T | undefined;
   renderChild: (childId: ComponentId) => React.ReactNode;
   renderChildren: (children: ChildrenDef) => React.ReactNode[];

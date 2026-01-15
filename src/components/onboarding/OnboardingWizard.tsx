@@ -8,13 +8,20 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { WelcomeStep } from "./steps/WelcomeStep";
 import { UserProfileStep } from "./steps/UserProfileStep";
+import { WindowSizeStep } from "./steps/WindowSizeStep";
 import { PluginSelectStep } from "./steps/PluginSelectStep";
 import {
   InstallProgressStep,
   type PluginInstallState,
 } from "./steps/InstallProgressStep";
 import { CompleteStep } from "./steps/CompleteStep";
-import { userProfiles, type UserProfile } from "./constants";
+import {
+  userProfiles,
+  type UserProfile,
+  type WindowSizePreference,
+  STORAGE_KEYS,
+} from "./constants";
+import { windowApi } from "@/lib/api/window";
 
 const Overlay = styled.div`
   position: fixed;
@@ -83,7 +90,7 @@ const FooterRight = styled.div`
   gap: 12px;
 `;
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 6;
 
 interface OnboardingWizardProps {
   onComplete: () => void;
@@ -92,6 +99,8 @@ interface OnboardingWizardProps {
 export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const [currentStep, setCurrentStep] = useState(1);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [windowSizePreference, setWindowSizePreference] =
+    useState<WindowSizePreference | null>("default");
   const [selectedPlugins, setSelectedPlugins] = useState<string[]>([]);
   const [installResults, setInstallResults] = useState<PluginInstallState[]>(
     [],
@@ -110,8 +119,8 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const handleNext = useCallback(() => {
     if (currentStep < TOTAL_STEPS) {
       // 如果没有选择插件，跳过安装步骤
-      if (currentStep === 3 && selectedPlugins.length === 0) {
-        setCurrentStep(5); // 直接跳到完成页
+      if (currentStep === 4 && selectedPlugins.length === 0) {
+        setCurrentStep(6); // 直接跳到完成页
       } else {
         setCurrentStep((prev) => prev + 1);
       }
@@ -121,9 +130,9 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
   const handleBack = useCallback(() => {
     if (currentStep > 1) {
       // 如果从完成页返回且没有安装结果，返回到插件选择
-      if (currentStep === 5 && installResults.length === 0) {
-        setCurrentStep(3);
-      } else if (currentStep === 5) {
+      if (currentStep === 6 && installResults.length === 0) {
+        setCurrentStep(4);
+      } else if (currentStep === 6) {
         // 已经安装过，不能返回
         return;
       } else {
@@ -138,14 +147,33 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   const handleInstallComplete = useCallback((results: PluginInstallState[]) => {
     setInstallResults(results);
-    setCurrentStep(5);
+    setCurrentStep(6);
   }, []);
 
-  const handleFinish = useCallback(() => {
+  const handleFinish = useCallback(async () => {
+    // 保存窗口尺寸偏好
+    if (windowSizePreference) {
+      localStorage.setItem(
+        STORAGE_KEYS.WINDOW_SIZE_PREFERENCE,
+        windowSizePreference,
+      );
+
+      // 应用窗口尺寸
+      try {
+        if (windowSizePreference === "fullscreen") {
+          await windowApi.toggleFullscreen();
+        } else {
+          await windowApi.setWindowSizeByOption(windowSizePreference);
+        }
+      } catch (error) {
+        console.error("应用窗口尺寸失败:", error);
+      }
+    }
+
     // 触发插件变化事件，刷新侧边栏
     window.dispatchEvent(new CustomEvent("plugin-changed"));
     onComplete();
-  }, [onComplete]);
+  }, [onComplete, windowSizePreference]);
 
   // 渲染当前步骤
   const renderStep = () => {
@@ -161,20 +189,27 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
         );
       case 3:
         return (
+          <WindowSizeStep
+            selectedSize={windowSizePreference}
+            onSelect={setWindowSizePreference}
+          />
+        );
+      case 4:
+        return (
           <PluginSelectStep
             userProfile={userProfile}
             selectedPlugins={selectedPlugins}
             onSelectionChange={setSelectedPlugins}
           />
         );
-      case 4:
+      case 5:
         return (
           <InstallProgressStep
             selectedPlugins={selectedPlugins}
             onComplete={handleInstallComplete}
           />
         );
-      case 5:
+      case 6:
         return (
           <CompleteStep
             installResults={installResults}
@@ -191,6 +226,8 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
     switch (currentStep) {
       case 2:
         return userProfile !== null;
+      case 3:
+        return windowSizePreference !== null;
       default:
         return true;
     }
@@ -198,7 +235,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
   // 判断是否显示底部导航
   const showFooter =
-    currentStep !== 1 && currentStep !== 4 && currentStep !== 5;
+    currentStep !== 1 && currentStep !== 5 && currentStep !== 6;
 
   return (
     <Overlay>
@@ -230,7 +267,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
                 跳过
               </Button>
               <Button onClick={handleNext} disabled={!canProceed()}>
-                {currentStep === 3
+                {currentStep === 4
                   ? selectedPlugins.length > 0
                     ? "开始安装"
                     : "跳过安装"

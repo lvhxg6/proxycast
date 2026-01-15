@@ -15,6 +15,7 @@
 //! - 2025-12-28: 修复请求格式，对齐 CLIProxyAPI 实现
 
 use crate::models::openai::*;
+use crate::session::{get_thought_signature, SessionManager};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -177,8 +178,10 @@ fn generate_request_id() -> String {
     format!("agent-{}", Uuid::new_v4())
 }
 
-/// 生成随机会话 ID
-fn generate_session_id() -> String {
+/// 生成随机会话 ID（兜底方案）
+///
+/// 当无法从请求中提取稳定的会话 ID 时使用
+fn generate_random_session_id() -> String {
     let uuid = Uuid::new_v4();
     let bytes = uuid.as_bytes();
     let n: u64 = u64::from_le_bytes([
@@ -216,14 +219,28 @@ fn default_safety_settings() -> Vec<SafetySetting> {
 /// 模型名称映射
 fn model_mapping(model: &str) -> &str {
     match model {
+        // Claude 模型映射
         "claude-sonnet-4-5-thinking" => "claude-sonnet-4-5",
         "claude-opus-4-5" => "claude-opus-4-5-thinking",
+
+        // Gemini 模型映射
         "gemini-2.5-flash-thinking" => "gemini-2.5-flash",
         "gemini-2.5-computer-use-preview-10-2025" => "rev19-uic3-1p",
+
+        // Gemini 3 preview 模型映射到正式名称
         "gemini-3-pro-image-preview" => "gemini-3-pro-image",
+        "gemini-3-flash-preview" => "gemini-3-flash",
         "gemini-3-pro-preview" => "gemini-3-pro-high",
+
+        // Gemini 2.5 preview 模型映射
+        "gemini-2.5-flash-preview" => "gemini-2.5-flash",
+
+        // Claude via Antigravity 映射
         "gemini-claude-sonnet-4-5" => "claude-sonnet-4-5",
         "gemini-claude-sonnet-4-5-thinking" => "claude-sonnet-4-5-thinking",
+        "gemini-claude-opus-4-5-thinking" => "claude-opus-4-5-thinking",
+
+        // 其他模型直接透传
         _ => model,
     }
 }
@@ -273,8 +290,17 @@ pub fn convert_openai_to_antigravity_with_context(
     request: &ChatCompletionRequest,
     project_id: &str,
 ) -> serde_json::Value {
+    eprintln!("========== [CONVERT] OpenAI -> Antigravity 转换开始 ==========");
+    eprintln!("[CONVERT] 原始模型: {}", request.model);
+    eprintln!("[CONVERT] 项目ID: {}", project_id);
+    eprintln!("[CONVERT] 消息数量: {}", request.messages.len());
+    eprintln!("[CONVERT] 流式: {}", request.stream);
+
     let actual_model = model_mapping(&request.model);
+    eprintln!("[CONVERT] 映射后模型: {}", actual_model);
+
     let supports_thinking = model_supports_thinking(actual_model);
+    eprintln!("[CONVERT] 支持思维链: {}", supports_thinking);
 
     let mut contents: Vec<GeminiContent> = Vec::new();
     let mut system_instruction: Option<GeminiContent> = None;
@@ -383,6 +409,14 @@ pub fn convert_openai_to_antigravity_with_context(
                 if let Some(tool_calls) = &msg.tool_calls {
                     let mut function_ids: Vec<String> = Vec::new();
 
+                    // 获取全局存储的 thoughtSignature（如果有）
+                    let global_sig = get_thought_signature();
+                    let thought_sig = global_sig.unwrap_or_else(|| {
+                        // 如果没有缓存的签名，使用跳过验证的标记
+                        // 注意：Vertex AI 不接受此标记，但 Cloud Code API 接受
+                        GEMINI_CLI_FUNCTION_THOUGHT_SIGNATURE.to_string()
+                    });
+
                     for tc in tool_calls {
                         let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::json!({}));
@@ -396,9 +430,7 @@ pub fn convert_openai_to_antigravity_with_context(
                                 args, // 直接使用 args，不要包装
                             }),
                             function_response: None,
-                            thought_signature: Some(
-                                GEMINI_CLI_FUNCTION_THOUGHT_SIGNATURE.to_string(),
-                            ),
+                            thought_signature: Some(thought_sig.clone()),
                         });
 
                         function_ids.push(tc.id.clone());
@@ -645,24 +677,58 @@ pub fn convert_openai_to_antigravity_with_context(
         }
     });
 
+    // 构建 toolConfig（如果有工具定义）
+    let tool_config: Option<serde_json::Value> = if tools.is_some() {
+        Some(serde_json::json!({
+            "functionCallingConfig": {
+                "mode": "AUTO"
+            }
+        }))
+    } else {
+        None
+    };
+
+    // 使用 SessionManager 生成稳定的会话 ID
+    let session_id = SessionManager::extract_session_id(request);
+    eprintln!("[CONVERT] 生成的稳定 SessionId: {}", session_id);
+
     let inner = AntigravityRequestInner {
         contents,
         system_instruction,
         generation_config: Some(generation_config),
         tools,
-        tool_config: None,
-        session_id: Some(generate_session_id()),
+        tool_config,
+        session_id: Some(session_id),
         safety_settings: Some(default_safety_settings()),
     };
 
+    // 确定 requestType（配额类型）
+    // - "agent": 默认类型，用于普通对话和工具调用
+    // - "web_search": 联网搜索请求
+    // - "image_gen": 图片生成请求
+    let request_type = if is_image_generation_model(actual_model) {
+        "image_gen"
+    } else {
+        "agent"
+    };
+
     // 构建完整的 Antigravity 请求体
-    serde_json::json!({
+    let result = serde_json::json!({
         "project": project_id,
         "requestId": generate_request_id(),
         "request": inner,
         "model": actual_model,
-        "userAgent": "antigravity"
-    })
+        "userAgent": "antigravity",
+        "requestType": request_type
+    });
+
+    eprintln!(
+        "[CONVERT] 转换后的请求体: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
+    eprintln!("========== [CONVERT] OpenAI -> Antigravity 转换完成 ==========");
+
+    result
 }
 
 // ============================================================================
@@ -1059,7 +1125,8 @@ pub fn convert_image_request_to_antigravity(
             "safetySettings": safety_settings
         },
         "model": actual_model,
-        "userAgent": "antigravity"
+        "userAgent": "antigravity",
+        "requestType": "image_gen"
     })
 }
 

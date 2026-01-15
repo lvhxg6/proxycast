@@ -28,13 +28,16 @@ import {
 } from "./components/terminal";
 import { flowEventManager } from "./lib/flowEventManager";
 import { OnboardingWizard, useOnboardingState } from "./components/onboarding";
+import { STORAGE_KEYS } from "./components/onboarding/constants";
 import { ConnectConfirmDialog } from "./components/connect";
 import { showRegistryLoadError } from "./lib/utils/connectError";
 import { useDeepLink } from "./hooks/useDeepLink";
 import { useRelayRegistry } from "./hooks/useRelayRegistry";
 import { ComponentDebugProvider } from "./contexts/ComponentDebugContext";
+import { SoundProvider } from "./contexts/SoundProvider";
 import { ComponentDebugOverlay } from "./components/dev";
 import { Page } from "./types/page";
+import { windowApi } from "./lib/api/window";
 
 const AppContainer = styled.div`
   display: flex;
@@ -100,6 +103,31 @@ function AppContent() {
   // 在应用启动时初始化 Flow 事件订阅
   useEffect(() => {
     flowEventManager.subscribe();
+  }, []);
+
+  // 应用启动时应用保存的窗口尺寸偏好
+  useEffect(() => {
+    const applyWindowSizePreference = async () => {
+      const savedPreference = localStorage.getItem(
+        STORAGE_KEYS.WINDOW_SIZE_PREFERENCE,
+      );
+      if (savedPreference) {
+        try {
+          if (savedPreference === "fullscreen") {
+            const isCurrentlyFullscreen = await windowApi.isFullscreen();
+            if (!isCurrentlyFullscreen) {
+              await windowApi.toggleFullscreen();
+            }
+          } else {
+            await windowApi.setWindowSizeByOption(savedPreference);
+          }
+        } catch (error) {
+          console.error("应用窗口尺寸偏好失败:", error);
+        }
+      }
+    };
+
+    applyWindowSizePreference();
   }, []);
 
   // 处理 Registry 加载失败
@@ -252,28 +280,30 @@ function AppContent() {
 
   // 4. 正常主界面
   return (
-    <ComponentDebugProvider>
-      <AppContainer>
-        <AppSidebar currentPage={currentPage} onNavigate={setCurrentPage} />
-        <MainContent>{renderAllPages()}</MainContent>
-        {/* ProxyCast Connect 确认弹窗 */}
-        {/* _Requirements: 5.2_ */}
-        <ConnectConfirmDialog
-          open={isDialogOpen}
-          relay={relayInfo}
-          relayId={connectPayload?.relay ?? ""}
-          apiKey={connectPayload?.key ?? ""}
-          keyName={connectPayload?.name}
-          isVerified={isVerified}
-          isSaving={isSaving}
-          error={error}
-          onConfirm={handleConfirm}
-          onCancel={handleCancel}
-        />
-        {/* 组件视图调试覆盖层 */}
-        <ComponentDebugOverlay />
-      </AppContainer>
-    </ComponentDebugProvider>
+    <SoundProvider>
+      <ComponentDebugProvider>
+        <AppContainer>
+          <AppSidebar currentPage={currentPage} onNavigate={setCurrentPage} />
+          <MainContent>{renderAllPages()}</MainContent>
+          {/* ProxyCast Connect 确认弹窗 */}
+          {/* _Requirements: 5.2_ */}
+          <ConnectConfirmDialog
+            open={isDialogOpen}
+            relay={relayInfo}
+            relayId={connectPayload?.relay ?? ""}
+            apiKey={connectPayload?.key ?? ""}
+            keyName={connectPayload?.name}
+            isVerified={isVerified}
+            isSaving={isSaving}
+            error={error}
+            onConfirm={handleConfirm}
+            onCancel={handleCancel}
+          />
+          {/* 组件视图调试覆盖层 */}
+          <ComponentDebugOverlay />
+        </AppContainer>
+      </ComponentDebugProvider>
+    </SoundProvider>
   );
 }
 
