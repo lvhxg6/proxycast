@@ -1,7 +1,7 @@
 //! Agent 类型定义
 //!
 //! 定义 Agent 模块使用的核心类型
-//! 参考 goose 项目的 Conversation 设计，支持连续对话和工具调用
+//! 参考 aster 项目的 Conversation 设计，支持连续对话和工具调用
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +50,41 @@ impl ProviderType {
             "iflow" => Self::IFlow,
             _ => Self::OpenAI, // 默认使用 OpenAI 协议
         }
+    }
+
+    /// 从 provider 字符串和模型名称推断 provider 类型
+    ///
+    /// 对于自定义 Provider ID（如 custom-xxx），尝试从模型名称推断协议类型
+    pub fn from_provider_and_model(provider: &str, model: &str) -> Self {
+        // 首先检查是否是自定义 Provider ID（以 custom- 开头）
+        if provider.starts_with("custom-") {
+            // 自定义 Provider 使用 Anthropic 兼容协议（Anthropic Compatible）
+            return Self::AnthropicCompatible;
+        }
+
+        // 对于其他 Provider，尝试直接解析
+        let provider_type = Self::from_str(provider);
+
+        // 如果能被识别，直接返回
+        if !matches!(provider_type, Self::OpenAI) || provider.eq_ignore_ascii_case("openai") {
+            return provider_type;
+        }
+
+        // 对于标准 Provider (kiro/openai/claude/gemini 等)，尝试从模型名称推断协议类型
+        let model_lower = model.to_lowercase();
+
+        // Claude 模型使用 Anthropic 协议
+        if model_lower.starts_with("claude-") || model_lower.starts_with("anthropic-") {
+            return Self::Claude;
+        }
+
+        // Gemini 模型
+        if model_lower.starts_with("gemini") || model_lower.contains("gemini") {
+            return Self::Gemini;
+        }
+
+        // 默认使用 OpenAI 协议
+        Self::OpenAI
     }
 
     /// 获取 API 端点路径
@@ -375,6 +410,11 @@ pub enum StreamEvent {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
 
+    /// 推理内容增量（DeepSeek reasoner 等模型的思考过程）
+    /// Requirements: 1.1 - THE Streaming_Handler SHALL emit reasoning deltas to the frontend in real-time
+    #[serde(rename = "reasoning_delta")]
+    ReasoningDelta { text: String },
+
     /// 工具调用开始
     /// Requirements: 7.6 - WHILE the Tool_Loop is executing, THE Frontend SHALL display the current tool being executed
     #[serde(rename = "tool_start")]
@@ -396,6 +436,31 @@ pub enum StreamEvent {
         tool_id: String,
         /// 工具执行结果
         result: ToolExecutionResult,
+    },
+
+    /// 权限确认请求
+    /// 当 Agent 需要用户确认某个操作时发送
+    #[serde(rename = "action_required")]
+    ActionRequired {
+        /// 请求 ID
+        request_id: String,
+        /// 操作类型
+        action_type: String,
+        /// 工具名称（tool_confirmation 类型）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_name: Option<String>,
+        /// 工具参数（tool_confirmation 类型）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        arguments: Option<serde_json::Value>,
+        /// 提示信息
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt: Option<String>,
+        /// 问题列表（ask_user 类型）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        questions: Option<serde_json::Value>,
+        /// 请求的数据结构（elicitation 类型）
+        #[serde(skip_serializing_if = "Option::is_none")]
+        requested_schema: Option<serde_json::Value>,
     },
 
     /// 完成（单次 API 响应完成，工具循环可能继续）

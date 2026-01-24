@@ -17,7 +17,6 @@ fn arb_provider_type() -> impl Strategy<Value = ProviderType> {
     prop_oneof![
         Just(ProviderType::Kiro),
         Just(ProviderType::Gemini),
-        Just(ProviderType::Qwen),
         Just(ProviderType::OpenAI),
         Just(ProviderType::Claude),
     ]
@@ -698,7 +697,6 @@ fn arb_sync_provider_type() -> impl Strategy<Value = PoolProviderType> {
     prop_oneof![
         Just(PoolProviderType::Kiro),
         Just(PoolProviderType::Gemini),
-        Just(PoolProviderType::Qwen),
         Just(PoolProviderType::OpenAI),
         Just(PoolProviderType::Claude),
     ]
@@ -900,8 +898,8 @@ proptest! {
                 },
             ),
             _ => (
-                PoolProviderType::Qwen,
-                PoolCredentialData::QwenOAuth {
+                PoolProviderType::Kiro,
+                PoolCredentialData::KiroOAuth {
                     creds_file_path: source_token_path.to_string_lossy().to_string(),
                 },
             ),
@@ -920,7 +918,6 @@ proptest! {
         let provider_name = match provider_type {
             PoolProviderType::Kiro => "kiro",
             PoolProviderType::Gemini => "gemini",
-            PoolProviderType::Qwen => "qwen",
             _ => "unknown",
         };
         let expected_token_path = auth_dir.join(provider_name).join(format!("{}.json", original_uuid));
@@ -950,7 +947,6 @@ proptest! {
         let loaded_path = match &loaded_cred.credential {
             PoolCredentialData::KiroOAuth { creds_file_path } => creds_file_path.clone(),
             PoolCredentialData::GeminiOAuth { creds_file_path, .. } => creds_file_path.clone(),
-            PoolCredentialData::QwenOAuth { creds_file_path } => creds_file_path.clone(),
             _ => String::new(),
         };
 

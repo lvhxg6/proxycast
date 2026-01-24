@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - 'v*'
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/workflows/deploy-docs.yml'
+      - '.github/workflows/update-homebrew.yml'
   workflow_dispatch:
     inputs:
       version:
@@ -17,7 +22,6 @@ permissions:
   actions: read
 
 env:
-  CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUSTUP_MAX_RETRIES: 10
   CARGO_TERM_COLOR: always
@@ -61,12 +65,15 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev pkg-config
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -75,16 +82,46 @@ jobs:
           shared-key: "rust-${{ matrix.target }}"
           cache-on-failure: true
           cache-all-crates: true
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: Install frontend dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Build Tauri app
+      # macOS 签名证书设置
+      - name: Import Apple Certificate
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # 创建临时 keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=${{ secrets.KEYCHAIN_PASSWORD }}
+
+          # 解码证书
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode > $RUNNER_TEMP/certificate.p12
+
+          # 创建 keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          # 导入证书
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+      - name: Build Tauri app (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_PROFILE_RELEASE_LTO: thin
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+          CARGO_INCREMENTAL: 0
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+          OPENSSL_NO_VENDOR: "1"
         with:
           tauriScript: npx tauri
           tagName: ${{ github.event.inputs.version || github.ref_name }}
@@ -105,12 +142,50 @@ jobs:
             - **Windows (64-bit)**: `proxycast_*_x64-setup.exe`
             - **Linux x64**: `proxycast_*_amd64.deb` / `proxycast_*_amd64.AppImage`
 
-            ### macOS 首次安装
+            ### 默认配置
+            - **端口**: 8999
+            - **API Key**: 首次启动自动生成，可在设置页查看/修改
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
 
-            由于应用未经 Apple 签名，首次打开可能提示「应用已损坏」，请运行：
-            ```bash
-            xattr -cr /Applications/proxycast.app
-            ```
+      - name: Build Tauri app (macOS/Windows)
+        if: matrix.platform != 'ubuntu-22.04'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARGO_PROFILE_RELEASE_LTO: thin
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 16
+          CARGO_INCREMENTAL: 0
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+          # Apple 签名环境变量
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Apple 公证环境变量（解决 Gatekeeper 警告）
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tauriScript: npx tauri
+          tagName: ${{ github.event.inputs.version || github.ref_name }}
+          releaseName: 'ProxyCast ${{ github.event.inputs.version || github.ref_name }}'
+          releaseBody: |
+            ## ProxyCast Release
+
+            ### Features
+            - AI API 代理服务
+            - Kiro OAuth 凭证管理
+            - OpenAI/Anthropic 兼容 API
+            - 自动检测凭证文件变化
+            - 多 Provider 支持
+
+            ### Downloads
+            - **macOS (Apple Silicon)**: `proxycast_*_aarch64.dmg`
+            - **macOS (Intel)**: `proxycast_*_x64.dmg`
+            - **Windows (64-bit)**: `proxycast_*_x64-setup.exe`
+            - **Linux x64**: `proxycast_*_amd64.deb` / `proxycast_*_amd64.AppImage`
 
             ### 默认配置
             - **端口**: 8999
@@ -118,3 +193,34 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      # 构建后清理，节省缓存空间
+      - name: Post-build cleanup (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          rm -rf src-tauri/target/release/deps || true
+          rm -rf src-tauri/target/release/build || true
+          rm -rf src-tauri/target/release/incremental || true
+          rm -rf src-tauri/target/${{ matrix.target }}/release/deps || true
+          rm -rf src-tauri/target/${{ matrix.target }}/release/build || true
+          rm -rf src-tauri/target/${{ matrix.target }}/release/incremental || true
+
+      - name: Post-build cleanup (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/deps
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/build
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/release/incremental
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/${{ matrix.target }}/release/deps
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/${{ matrix.target }}/release/build
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue src-tauri/target/${{ matrix.target }}/release/incremental
+
+      - name: Show sccache stats
+        run: sccache --show-stats
+
+      # 清理 keychain
+      - name: Cleanup Keychain
+        if: matrix.platform == 'macos-latest' && always()
+        run: |
+          security delete-keychain $RUNNER_TEMP/app-signing.keychain-db || true

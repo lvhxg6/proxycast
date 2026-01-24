@@ -6,7 +6,6 @@ use chrono::{Duration, Utc};
 use proptest::prelude::*;
 
 use crate::providers::codex::CodexProvider;
-use crate::providers::iflow::IFlowProvider;
 use crate::providers::vertex::VertexProvider;
 
 /// Generate a random lead time in minutes (1 to 30 minutes)
@@ -79,10 +78,10 @@ proptest! {
     }
 
     /// **Feature: cliproxyapi-parity, Property 2: Token Refresh Timing**
-    /// Test that iFlow OAuth tokens trigger refresh before expiration
+    /// Test that Codex OAuth tokens trigger refresh before expiration (second test)
     /// **Validates: Requirements 1.2, 2.2**
     #[test]
-    fn test_iflow_token_refresh_timing(
+    fn test_codex_token_refresh_timing_second(
         lead_time_mins in arb_lead_time_mins(),
         time_offset_secs in -3600i64..7200i64,
     ) {
@@ -92,8 +91,7 @@ proptest! {
         // 跳过边界条件，因为时间精度问题可能导致不确定行为
         prop_assume!(time_offset_secs != lead_time_secs);
 
-        let mut provider = IFlowProvider::new();
-        provider.credentials.auth_type = "oauth".to_string();
+        let mut provider = CodexProvider::new();
         provider.credentials.access_token = Some("test_token".to_string());
 
         // Set expiration time relative to now
@@ -109,7 +107,7 @@ proptest! {
         prop_assert_eq!(
             needs_refresh,
             expected_needs_refresh,
-            "iFlow: Token with expiry in {} seconds should {} refresh with lead time of {} minutes",
+            "Codex: Token with expiry in {} seconds should {} refresh with lead time of {} minutes",
             time_offset_secs,
             if expected_needs_refresh { "need" } else { "not need" },
             lead_time_mins
@@ -154,33 +152,6 @@ proptest! {
         prop_assert!(
             needs_refresh,
             "Codex: Missing expiry info should always need refresh"
-        );
-    }
-
-    /// **Feature: cliproxyapi-parity, Property 2: Token Refresh Timing**
-    /// Test that iFlow cookie auth type never needs OAuth refresh
-    /// **Validates: Requirements 2.2**
-    #[test]
-    fn test_iflow_cookie_auth_no_refresh(
-        lead_time_mins in arb_lead_time_mins(),
-        time_offset_secs in arb_time_offset_secs(),
-    ) {
-        let lead_time = Duration::minutes(lead_time_mins);
-
-        let mut provider = IFlowProvider::new();
-        provider.credentials.auth_type = "cookie".to_string();
-        provider.credentials.cookies = Some("session=abc123".to_string());
-
-        // Even with expiry set, cookie auth should not trigger OAuth refresh
-        let now = Utc::now();
-        let expires_at = now + Duration::seconds(time_offset_secs);
-        provider.credentials.expires_at = Some(expires_at.to_rfc3339());
-
-        let needs_refresh = provider.needs_refresh(lead_time);
-
-        prop_assert!(
-            !needs_refresh,
-            "iFlow: Cookie auth type should never need OAuth token refresh"
         );
     }
 
@@ -238,8 +209,7 @@ proptest! {
     ///
     /// This test verifies that:
     /// 1. Codex provider correctly identifies GPT models (gpt-*, o1*, o3*, o4*, *codex*)
-    /// 2. iFlow provider correctly identifies iFlow models (iflow*, *iflow*)
-    /// 3. Vertex provider correctly resolves model aliases
+    /// 2. Vertex provider correctly resolves model aliases
     #[test]
     fn test_codex_provider_routing_gpt_models(
         model_suffix in "[a-z0-9\\-]{1,10}",
@@ -310,49 +280,6 @@ proptest! {
         prop_assert!(
             !CodexProvider::supports_model(&model),
             "Codex should NOT support non-GPT model: {}",
-            model
-        );
-    }
-
-    /// **Feature: cliproxyapi-parity, Property 3: Provider Routing Correctness**
-    /// Test that iFlow provider correctly identifies iFlow models
-    /// **Validates: Requirements 2.3**
-    #[test]
-    fn test_iflow_provider_routing_iflow_models(
-        suffix in "[a-z0-9\\-]{1,10}",
-    ) {
-        // Models starting with "iflow" should be supported
-        let iflow_model = format!("iflow-{}", suffix);
-        prop_assert!(
-            IFlowProvider::supports_model(&iflow_model),
-            "iFlow should support model starting with 'iflow': {}",
-            iflow_model
-        );
-
-        // Models containing "iflow" should be supported
-        let containing_model = format!("my-iflow-{}", suffix);
-        prop_assert!(
-            IFlowProvider::supports_model(&containing_model),
-            "iFlow should support model containing 'iflow': {}",
-            containing_model
-        );
-    }
-
-    /// **Feature: cliproxyapi-parity, Property 3: Provider Routing Correctness**
-    /// Test that iFlow provider does NOT support non-iFlow models
-    /// **Validates: Requirements 2.3**
-    #[test]
-    fn test_iflow_provider_routing_non_iflow_models(
-        model in prop_oneof![
-            Just("gpt-4"),
-            Just("claude-3"),
-            Just("gemini-pro"),
-            Just("llama-2"),
-        ],
-    ) {
-        prop_assert!(
-            !IFlowProvider::supports_model(&model),
-            "iFlow should NOT support non-iFlow model: {}",
             model
         );
     }
@@ -970,33 +897,6 @@ mod unit_tests {
         assert!(
             provider.needs_refresh(lead_time),
             "Expired token should need refresh"
-        );
-    }
-
-    #[test]
-    fn test_iflow_needs_refresh_boundary() {
-        let mut provider = IFlowProvider::new();
-        provider.credentials.auth_type = "oauth".to_string();
-        provider.credentials.access_token = Some("test_token".to_string());
-
-        let lead_time = Duration::minutes(5);
-
-        // Token expiring well after lead_time - should NOT need refresh
-        let now = Utc::now();
-        let expires_at = now + Duration::minutes(10);
-        provider.credentials.expires_at = Some(expires_at.to_rfc3339());
-        assert!(
-            !provider.needs_refresh(lead_time),
-            "Token expiring in 10 mins should not need refresh with 5 min lead time"
-        );
-
-        // Token expiring well before lead_time - should need refresh
-        let now = Utc::now();
-        let expires_at = now + Duration::minutes(2);
-        provider.credentials.expires_at = Some(expires_at.to_rfc3339());
-        assert!(
-            provider.needs_refresh(lead_time),
-            "Token expiring in 2 mins should need refresh with 5 min lead time"
         );
     }
 }

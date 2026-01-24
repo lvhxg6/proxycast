@@ -864,7 +864,6 @@ mod property_tests {
         prop_oneof![
             Just(ProviderType::Kiro),
             Just(ProviderType::Gemini),
-            Just(ProviderType::Qwen),
             Just(ProviderType::OpenAI),
             Just(ProviderType::Claude),
             Just(ProviderType::Antigravity),
@@ -872,7 +871,6 @@ mod property_tests {
             Just(ProviderType::GeminiApiKey),
             Just(ProviderType::Codex),
             Just(ProviderType::ClaudeOAuth),
-            Just(ProviderType::IFlow),
         ]
     }
 

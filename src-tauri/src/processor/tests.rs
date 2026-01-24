@@ -175,7 +175,6 @@ fn arb_provider_type() -> impl Strategy<Value = ProviderType> {
     prop_oneof![
         Just(ProviderType::Kiro),
         Just(ProviderType::Gemini),
-        Just(ProviderType::Qwen),
         Just(ProviderType::OpenAI),
         Just(ProviderType::Claude),
     ]

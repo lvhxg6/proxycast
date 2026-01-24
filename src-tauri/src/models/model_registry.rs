@@ -167,6 +167,8 @@ pub enum ModelSource {
     Local,
     /// 用户自定义
     Custom,
+    /// 从 Provider API 获取
+    Api,
 }
 
 impl Default for ModelSource {
@@ -182,6 +184,7 @@ impl std::fmt::Display for ModelSource {
             Self::ModelsDev => write!(f, "models.dev"),
             Self::Local => write!(f, "local"),
             Self::Custom => write!(f, "custom"),
+            Self::Api => write!(f, "api"),
         }
     }
 }
@@ -195,6 +198,7 @@ impl std::str::FromStr for ModelSource {
             "models.dev" | "modelsdev" => Ok(Self::ModelsDev),
             "local" => Ok(Self::Local),
             "custom" => Ok(Self::Custom),
+            "api" => Ok(Self::Api),
             _ => Err(format!("Unknown model source: {}", s)),
         }
     }

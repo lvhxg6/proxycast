@@ -223,6 +223,19 @@ impl ProviderPoolService {
         provider_type: &str,
         model: Option<&str>,
     ) -> Result<Option<ProviderCredential>, String> {
+        self.select_credential_with_client_check(db, provider_type, model, None)
+    }
+
+    /// 选择凭证并检查客户端兼容性
+    ///
+    /// 内部方法，支持客户端类型检查
+    pub fn select_credential_with_client_check(
+        &self,
+        db: &DbConnection,
+        provider_type: &str,
+        model: Option<&str>,
+        client_type: Option<&crate::server::client_detector::ClientType>,
+    ) -> Result<Option<ProviderCredential>, String> {
         // 对于未知的 provider_type，直接返回 None（不是错误）
         // 这样可以让 select_credential_with_fallback 继续尝试智能降级
         let pt: PoolProviderType = match provider_type.parse() {
@@ -237,7 +250,7 @@ impl ProviderPoolService {
         };
         let conn = db.lock().map_err(|e| e.to_string())?;
 
-        // 获取凭证，对于 Anthropic 类型，也查找 Claude 类型的凭证
+        // 获取凭证，对于 AI Provider 类型，也查找 Assistant 类型的凭证
         let mut credentials =
             ProviderPoolDao::get_by_type(&conn, &pt).map_err(|e| e.to_string())?;
         eprintln!(
@@ -247,23 +260,24 @@ impl ProviderPoolService {
             credentials.len()
         );
 
-        // Anthropic 和 Claude 共享凭证（都使用 Anthropic API）
+        // AI Provider 和 Assistant 共享凭证（都使用 AI Provider API）
         if pt == PoolProviderType::Anthropic {
-            let claude_creds = ProviderPoolDao::get_by_type(&conn, &PoolProviderType::Claude)
+            let assistant_creds = ProviderPoolDao::get_by_type(&conn, &PoolProviderType::Claude)
                 .map_err(|e| e.to_string())?;
             eprintln!(
-                "[SELECT_CREDENTIAL] Anthropic: adding {} Claude credentials",
-                claude_creds.len()
+                "[SELECT_CREDENTIAL] AI Provider: adding {} Assistant credentials",
+                assistant_creds.len()
             );
-            credentials.extend(claude_creds);
+            credentials.extend(assistant_creds);
         } else if pt == PoolProviderType::Claude {
-            let anthropic_creds = ProviderPoolDao::get_by_type(&conn, &PoolProviderType::Anthropic)
-                .map_err(|e| e.to_string())?;
+            let ai_provider_creds =
+                ProviderPoolDao::get_by_type(&conn, &PoolProviderType::Anthropic)
+                    .map_err(|e| e.to_string())?;
             eprintln!(
-                "[SELECT_CREDENTIAL] Claude: adding {} Anthropic credentials",
-                anthropic_creds.len()
+                "[SELECT_CREDENTIAL] Assistant: adding {} AI Provider credentials",
+                ai_provider_creds.len()
             );
-            credentials.extend(anthropic_creds);
+            credentials.extend(ai_provider_creds);
         }
 
         drop(conn);
@@ -321,8 +335,21 @@ impl ProviderPoolService {
             });
         }
 
+        // 过滤客户端兼容的凭证
+        available.retain(|c| {
+            let compatible = c.is_compatible_with_client(client_type);
+            if !compatible {
+                eprintln!(
+                    "[SELECT_CREDENTIAL] credential {} 不兼容客户端类型 {:?}",
+                    c.name.as_deref().unwrap_or("unnamed"),
+                    client_type
+                );
+            }
+            compatible
+        });
+
         eprintln!(
-            "[SELECT_CREDENTIAL] final available count: {}",
+            "[SELECT_CREDENTIAL] after client compatibility filter: {}",
             available.len()
         );
 
@@ -348,21 +375,23 @@ impl ProviderPoolService {
     /// # 参数
     /// - `db`: 数据库连接
     /// - `api_key_service`: API Key Provider 服务
-    /// - `provider_type`: Provider 类型字符串，如 "claude", "openai", "qwen"
+    /// - `provider_type`: Provider 类型字符串，如 "assistant", "openai"
     /// - `model`: 可选的模型名称
     /// - `provider_id_hint`: 可选的 provider_id 提示，用于 60+ Provider 直接查找
+    /// - `client_type`: 可选的客户端类型，用于凭证兼容性检查
     ///
     /// # 返回
     /// - `Ok(Some(credential))`: 找到可用凭证（来自 Pool 或降级）
     /// - `Ok(None)`: 没有找到任何可用凭证
     /// - `Err(e)`: 查询过程中发生错误
-    pub fn select_credential_with_fallback(
+    pub async fn select_credential_with_fallback(
         &self,
         db: &DbConnection,
         api_key_service: &ApiKeyProviderService,
         provider_type: &str,
         model: Option<&str>,
         provider_id_hint: Option<&str>,
+        client_type: Option<&crate::server::client_detector::ClientType>,
     ) -> Result<Option<ProviderCredential>, String> {
         eprintln!(
             "[select_credential_with_fallback] 开始: provider_type={}, model={:?}, provider_id_hint={:?}",
@@ -370,7 +399,9 @@ impl ProviderPoolService {
         );
 
         // Step 1: 尝试从 Provider Pool 选择 (OAuth + API Key)
-        if let Some(cred) = self.select_credential(db, provider_type, model)? {
+        if let Some(cred) =
+            self.select_credential_with_client_check(db, provider_type, model, client_type)?
+        {
             eprintln!(
                 "[select_credential_with_fallback] 从 Provider Pool 找到凭证: {:?}",
                 cred.name
@@ -388,7 +419,10 @@ impl ProviderPoolService {
 
         // 传入 provider_id_hint 支持 60+ Provider
         eprintln!("[select_credential_with_fallback] 调用 get_fallback_credential");
-        if let Some(cred) = api_key_service.get_fallback_credential(db, &pt, provider_id_hint)? {
+        if let Some(cred) = api_key_service
+            .get_fallback_credential(db, &pt, provider_id_hint, client_type)
+            .await?
+        {
             eprintln!(
                 "[select_credential_with_fallback] 智能降级成功: {:?}",
                 cred.name
@@ -402,6 +436,28 @@ impl ProviderPoolService {
             provider_type
         );
         Ok(None)
+    }
+
+    /// 带智能降级的凭证选择（兼容方法）
+    ///
+    /// 为了向后兼容，保留原有的方法签名
+    pub async fn select_credential_with_fallback_legacy(
+        &self,
+        db: &DbConnection,
+        api_key_service: &ApiKeyProviderService,
+        provider_type: &str,
+        model: Option<&str>,
+        provider_id_hint: Option<&str>,
+    ) -> Result<Option<ProviderCredential>, String> {
+        self.select_credential_with_fallback(
+            db,
+            api_key_service,
+            provider_type,
+            model,
+            provider_id_hint,
+            None, // 兼容方法不传递客户端类型
+        )
+        .await
     }
 
     /// 基于权重分数选择最优凭证
@@ -926,9 +982,6 @@ impl ProviderPoolService {
                 self.check_gemini_health(creds_file_path, project_id.as_deref(), model)
                     .await
             }
-            CredentialData::QwenOAuth { creds_file_path } => {
-                self.check_qwen_health(creds_file_path, model).await
-            }
             CredentialData::AntigravityOAuth {
                 creds_file_path,
                 project_id,
@@ -965,12 +1018,6 @@ impl ProviderPoolService {
             }
             CredentialData::ClaudeOAuth { creds_file_path } => {
                 self.check_claude_oauth_health(creds_file_path, model).await
-            }
-            CredentialData::IFlowOAuth { creds_file_path } => {
-                self.check_iflow_oauth_health(creds_file_path, model).await
-            }
-            CredentialData::IFlowCookie { creds_file_path } => {
-                self.check_iflow_cookie_health(creds_file_path, model).await
             }
             CredentialData::AnthropicKey { api_key, base_url } => {
                 // Anthropic API Key 使用与 Claude API Key 相同的健康检查逻辑
@@ -1143,55 +1190,6 @@ impl ProviderPoolService {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             Err(format!("HTTP {} - {}", status, body))
-        }
-    }
-
-    // Qwen OAuth 健康检查
-    async fn check_qwen_health(&self, creds_path: &str, model: &str) -> Result<(), String> {
-        let creds_content =
-            std::fs::read_to_string(creds_path).map_err(|e| format!("读取凭证文件失败: {}", e))?;
-        let creds: serde_json::Value =
-            serde_json::from_str(&creds_content).map_err(|e| format!("解析凭证失败: {}", e))?;
-
-        let access_token = creds["access_token"]
-            .as_str()
-            .ok_or_else(|| "凭证中缺少 access_token".to_string())?;
-
-        // 获取 base_url，优先使用 resource_url，否则使用默认值
-        let base_url = if let Some(resource_url) = creds["resource_url"].as_str() {
-            if resource_url.starts_with("http") {
-                format!("{}/v1", resource_url.trim_end_matches('/'))
-            } else {
-                format!("https://{}/v1", resource_url)
-            }
-        } else {
-            "https://portal.qwen.ai/v1".to_string()
-        };
-
-        let request_body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Say OK"}],
-            "max_tokens": 10
-        });
-
-        let url = format!("{}/chat/completions", base_url);
-
-        let response = self
-            .client
-            .post(&url)
-            .bearer_auth(access_token)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .json(&request_body)
-            .timeout(self.health_check_timeout)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {}", e))?;
-
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("HTTP {}", response.status()))
         }
     }
 
@@ -1550,87 +1548,6 @@ impl ProviderPoolService {
         }
     }
 
-    // iFlow OAuth 健康检查
-    async fn check_iflow_oauth_health(&self, creds_path: &str, model: &str) -> Result<(), String> {
-        use crate::providers::iflow::IFlowProvider;
-
-        let mut provider = IFlowProvider::new();
-        provider
-            .load_credentials_from_path(creds_path)
-            .await
-            .map_err(|e| format!("加载 iFlow OAuth 凭证失败: {}", e))?;
-
-        let token = provider
-            .ensure_valid_token()
-            .await
-            .map_err(|e| format!("获取 iFlow OAuth Token 失败: {}", e))?;
-
-        // 使用 iFlow API 进行健康检查
-        let url = "https://iflow.cn/api/v1/chat/completions";
-        let request_body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Say OK"}],
-            "max_tokens": 10
-        });
-
-        let response = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", token))
-            .json(&request_body)
-            .timeout(self.health_check_timeout)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {}", e))?;
-
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("HTTP {}", response.status()))
-        }
-    }
-
-    // iFlow Cookie 健康检查
-    async fn check_iflow_cookie_health(&self, creds_path: &str, model: &str) -> Result<(), String> {
-        use crate::providers::iflow::IFlowProvider;
-
-        let mut provider = IFlowProvider::new();
-        provider
-            .load_credentials_from_path(creds_path)
-            .await
-            .map_err(|e| format!("加载 iFlow Cookie 凭证失败: {}", e))?;
-
-        let api_key = provider
-            .credentials
-            .api_key
-            .as_ref()
-            .ok_or_else(|| "iFlow Cookie 凭证中没有 API Key".to_string())?;
-
-        // 使用 iFlow API 进行健康检查
-        let url = "https://iflow.cn/api/v1/chat/completions";
-        let request_body = serde_json::json!({
-            "model": model,
-            "messages": [{"role": "user", "content": "Say OK"}],
-            "max_tokens": 10
-        });
-
-        let response = self
-            .client
-            .post(url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .json(&request_body)
-            .timeout(self.health_check_timeout)
-            .send()
-            .await
-            .map_err(|e| format!("请求失败: {}", e))?;
-
-        if response.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("HTTP {}", response.status()))
-        }
-    }
-
     /// 根据名称获取凭证
     pub fn get_by_name(
         &self,
@@ -1742,19 +1659,7 @@ impl ProviderPoolService {
                 // Kiro 没有标准的过期时间字段，假设有 access_token 就有效
                 (has_access_token, expires_at)
             }
-            "gemini" | "qwen" => {
-                let expiry = creds.get("expiry_date").and_then(|v| v.as_i64());
-                if let Some(exp) = expiry {
-                    let now = chrono::Utc::now().timestamp();
-                    let is_valid = exp > now;
-                    let expiry_str = chrono::DateTime::from_timestamp(exp, 0)
-                        .map(|dt| dt.to_rfc3339())
-                        .unwrap_or_else(|| exp.to_string());
-                    (is_valid, Some(expiry_str))
-                } else {
-                    (has_access_token, None)
-                }
-            }
+
             "codex" => {
                 // Codex: 兼容 OAuth token 或 Codex CLI 的 API Key 登录
                 if has_api_key {
@@ -1813,19 +1718,6 @@ impl ProviderPoolService {
             .map_err(|e| format!("刷新 Token 失败: {}", e))
     }
 
-    /// 刷新 OAuth Token (Qwen)
-    pub async fn refresh_qwen_token(&self, creds_path: &str) -> Result<String, String> {
-        let mut provider = crate::providers::qwen::QwenProvider::new();
-        provider
-            .load_credentials_from_path(creds_path)
-            .await
-            .map_err(|e| format!("加载凭证失败: {}", e))?;
-        provider
-            .refresh_token()
-            .await
-            .map_err(|e| format!("刷新 Token 失败: {}", e))
-    }
-
     /// 刷新 OAuth Token (Antigravity)
     pub async fn refresh_antigravity_token(&self, creds_path: &str) -> Result<String, String> {
         let mut provider = crate::providers::antigravity::AntigravityProvider::new();
@@ -1859,9 +1751,6 @@ impl ProviderPoolService {
             CredentialData::GeminiOAuth {
                 creds_file_path, ..
             } => self.refresh_gemini_token(creds_file_path).await,
-            CredentialData::QwenOAuth { creds_file_path } => {
-                self.refresh_qwen_token(creds_file_path).await
-            }
             CredentialData::AntigravityOAuth {
                 creds_file_path, ..
             } => self.refresh_antigravity_token(creds_file_path).await,
@@ -1975,34 +1864,6 @@ impl ProviderPoolService {
                         ) {
                             Ok(_) => result.migrated_count += 1,
                             Err(e) => result.errors.push(format!("Gemini: {}", e)),
-                        }
-                    } else {
-                        result.skipped_count += 1;
-                    }
-                }
-            }
-        }
-
-        // 迁移 Qwen 凭证
-        if config.providers.qwen.enabled {
-            if let Some(creds_path) = &config.providers.qwen.credentials_path {
-                let expanded_path = expand_tilde(creds_path);
-                let expanded_path_str = expanded_path.to_string_lossy().to_string();
-                if expanded_path.exists() {
-                    if !self.credential_exists_by_path(db, &expanded_path_str)? {
-                        match self.add_credential_with_source(
-                            db,
-                            "qwen",
-                            CredentialData::QwenOAuth {
-                                creds_file_path: expanded_path_str.clone(),
-                            },
-                            Some("Private Qwen".to_string()),
-                            Some(true),
-                            None,
-                            CredentialSource::Private,
-                        ) {
-                            Ok(_) => result.migrated_count += 1,
-                            Err(e) => result.errors.push(format!("Qwen: {}", e)),
                         }
                     } else {
                         result.skipped_count += 1;

@@ -41,8 +41,10 @@ export interface ToolExecutionResult {
  */
 export type StreamEvent =
   | StreamEventTextDelta
+  | StreamEventReasoningDelta
   | StreamEventToolStart
   | StreamEventToolEnd
+  | StreamEventActionRequired
   | StreamEventDone
   | StreamEventFinalDone
   | StreamEventError;
@@ -53,6 +55,15 @@ export type StreamEvent =
  */
 export interface StreamEventTextDelta {
   type: "text_delta";
+  text: string;
+}
+
+/**
+ * 推理内容增量事件（DeepSeek reasoner 等模型的思考过程）
+ * Requirements: 9.3 - THE Frontend SHALL distinguish between text responses and tool call responses visually
+ */
+export interface StreamEventReasoningDelta {
+  type: "thinking_delta";
   text: string;
 }
 
@@ -80,6 +91,36 @@ export interface StreamEventToolEnd {
   tool_id: string;
   /** 工具执行结果 */
   result: ToolExecutionResult;
+}
+
+/**
+ * 权限确认请求事件
+ * 当 Agent 需要用户确认某个操作时发送
+ */
+export interface StreamEventActionRequired {
+  type: "action_required";
+  /** 请求 ID */
+  request_id: string;
+  /** 操作类型 */
+  action_type: "tool_confirmation" | "ask_user" | "elicitation";
+  /** 工具名称（工具确认时） */
+  tool_name?: string;
+  /** 工具参数（工具确认时） */
+  arguments?: Record<string, unknown>;
+  /** 提示信息 */
+  prompt?: string;
+  /** 问题列表（ask_user 时） */
+  questions?: Array<{
+    question: string;
+    header?: string;
+    options?: Array<{
+      label: string;
+      description?: string;
+    }>;
+    multiSelect?: boolean;
+  }>;
+  /** 请求的数据结构（elicitation 时） */
+  requested_schema?: Record<string, unknown>;
 }
 
 /**
@@ -150,6 +191,11 @@ export function parseStreamEvent(data: unknown): StreamEvent | null {
         type: "text_delta",
         text: (event.text as string) || "",
       };
+    case "reasoning_delta":
+      return {
+        type: "thinking_delta",
+        text: (event.text as string) || "",
+      };
     case "tool_start":
       return {
         type: "tool_start",
@@ -162,6 +208,33 @@ export function parseStreamEvent(data: unknown): StreamEvent | null {
         type: "tool_end",
         tool_id: (event.tool_id as string) || "",
         result: event.result as ToolExecutionResult,
+      };
+    case "action_required":
+      return {
+        type: "action_required",
+        request_id: (event.request_id as string) || "",
+        action_type:
+          (event.action_type as
+            | "tool_confirmation"
+            | "ask_user"
+            | "elicitation") || "tool_confirmation",
+        tool_name: event.tool_name as string | undefined,
+        arguments: event.arguments as Record<string, unknown> | undefined,
+        prompt: event.prompt as string | undefined,
+        questions: event.questions as
+          | Array<{
+              question: string;
+              header?: string;
+              options?: Array<{
+                label: string;
+                description?: string;
+              }>;
+              multiSelect?: boolean;
+            }>
+          | undefined,
+        requested_schema: event.requested_schema as
+          | Record<string, unknown>
+          | undefined,
       };
     case "done":
       return {
@@ -396,83 +469,83 @@ export async function getAgentSessionMessages(
 }
 
 // ============================================================
-// Goose Agent API (基于 Goose 框架的完整 Agent 实现)
+// aster Agent API (基于 aster 框架的完整 Agent 实现)
 // ============================================================
 
 /**
- * Goose Agent 状态
+ * aster Agent 状态
  */
-export interface GooseAgentStatus {
+export interface asterAgentStatus {
   initialized: boolean;
   provider?: string;
   model?: string;
 }
 
 /**
- * Goose Provider 信息
+ * aster Provider 信息
  */
-export interface GooseProviderInfo {
+export interface asterProviderInfo {
   name: string;
   display_name: string;
 }
 
 /**
- * Goose 创建会话响应
+ * aster 创建会话响应
  */
-export interface GooseCreateSessionResponse {
+export interface asterCreateSessionResponse {
   session_id: string;
 }
 
 /**
- * 初始化 Goose Agent
+ * 初始化 aster Agent
  *
  * @param providerName - Provider 名称 (如 "anthropic", "openai", "ollama")
  * @param modelName - 模型名称 (如 "claude-sonnet-4-20250514", "gpt-4o")
  */
-export async function initGooseAgent(
+export async function initasterAgent(
   providerName: string,
   modelName: string,
-): Promise<GooseAgentStatus> {
-  return await safeInvoke("goose_agent_init", {
+): Promise<asterAgentStatus> {
+  return await safeInvoke("aster_agent_init", {
     providerName,
     modelName,
   });
 }
 
 /**
- * 获取 Goose Agent 状态
+ * 获取 aster Agent 状态
  */
-export async function getGooseAgentStatus(): Promise<GooseAgentStatus> {
-  return await safeInvoke("goose_agent_status");
+export async function getasterAgentStatus(): Promise<asterAgentStatus> {
+  return await safeInvoke("aster_agent_status");
 }
 
 /**
- * 重置 Goose Agent
+ * 重置 aster Agent
  */
-export async function resetGooseAgent(): Promise<void> {
-  return await safeInvoke("goose_agent_reset");
+export async function resetasterAgent(): Promise<void> {
+  return await safeInvoke("aster_agent_reset");
 }
 
 /**
- * 创建 Goose Agent 会话
+ * 创建 aster Agent 会话
  */
-export async function createGooseSession(
+export async function createasterSession(
   name?: string,
-): Promise<GooseCreateSessionResponse> {
-  return await safeInvoke("goose_agent_create_session", { name });
+): Promise<asterCreateSessionResponse> {
+  return await safeInvoke("aster_agent_create_session", { name });
 }
 
 /**
- * 发送消息到 Goose Agent (流式响应)
+ * 发送消息到 aster Agent (流式响应)
  *
  * 通过 Tauri 事件接收响应流
  */
-export async function sendGooseMessage(
+export async function sendasterMessage(
   sessionId: string,
   message: string,
   eventName: string,
 ): Promise<void> {
-  return await safeInvoke("goose_agent_send_message", {
+  return await safeInvoke("aster_agent_send_message", {
     request: {
       session_id: sessionId,
       message,
@@ -482,19 +555,19 @@ export async function sendGooseMessage(
 }
 
 /**
- * 扩展 Goose Agent 系统提示词
+ * 扩展 aster Agent 系统提示词
  */
-export async function extendGooseSystemPrompt(
+export async function extendasterSystemPrompt(
   instruction: string,
 ): Promise<void> {
-  return await safeInvoke("goose_agent_extend_system_prompt", { instruction });
+  return await safeInvoke("aster_agent_extend_system_prompt", { instruction });
 }
 
 /**
- * 获取 Goose 支持的 Provider 列表
+ * 获取 aster 支持的 Provider 列表
  */
-export async function listGooseProviders(): Promise<GooseProviderInfo[]> {
-  return await safeInvoke("goose_agent_list_providers");
+export async function listasterProviders(): Promise<asterProviderInfo[]> {
+  return await safeInvoke("aster_agent_list_providers");
 }
 
 // ============================================================
@@ -756,5 +829,36 @@ export async function sendTermScrollbackResponse(
     content: response.content,
     hasMore: response.has_more,
     error: response.error,
+  });
+}
+
+// ============================================================
+// Permission Confirmation API (权限确认)
+// ============================================================
+
+/**
+ * 权限确认响应
+ */
+export interface PermissionResponse {
+  /** 请求 ID */
+  requestId: string;
+  /** 是否确认 */
+  confirmed: boolean;
+  /** 响应内容（用户输入或选择的答案） */
+  response?: string;
+}
+
+/**
+ * 发送权限确认响应到后端
+ *
+ * 当用户确认或拒绝权限请求后，调用此函数将结果发送给 Agent
+ */
+export async function sendPermissionResponse(
+  response: PermissionResponse,
+): Promise<void> {
+  return await safeInvoke("agent_permission_response", {
+    requestId: response.requestId,
+    confirmed: response.confirmed,
+    response: response.response,
   });
 }

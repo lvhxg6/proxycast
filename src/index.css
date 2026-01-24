@@ -20,6 +20,21 @@
     --destructive-foreground: 210 40% 98%;
     --border: 214.3 31.8% 91.4%;
     --radius: 0.5rem;
+
+    /* Claude 风格颜色 */
+    --surface: #ffffff;
+    --surface-secondary: #f5f4f1;
+    --surface-tertiary: #efeee9;
+    --surface-cream: #faf9f6;
+    --ink-900: #1a1915;
+    --ink-700: #4a4a45;
+    --ink-600: #666661;
+    --ink-400: #9b9b96;
+    --claude-accent: #d97757;
+    --claude-accent-hover: #cc785c;
+    --claude-accent-subtle: #fdf4f1;
+    --success: #16a34a;
+    --info: #2563eb;
   }
 
   .dark {
@@ -38,6 +53,19 @@
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 40% 98%;
     --border: 217.2 32.6% 17.5%;
+
+    /* Claude 风格颜色 - 暗色模式 */
+    --surface: #1a1915;
+    --surface-secondary: #2d2d2a;
+    --surface-tertiary: #3a3a35;
+    --surface-cream: #242420;
+    --ink-900: #f5f4f1;
+    --ink-700: #d1d1cc;
+    --ink-600: #9b9b96;
+    --ink-400: #666661;
+    --claude-accent: #e8956f;
+    --claude-accent-hover: #d97757;
+    --claude-accent-subtle: #3d2a24;
   }
 }
 
@@ -79,5 +107,72 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
+}
+
+/* Claude 风格动画 */
+@keyframes shimmer {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+.animate-shimmer {
+  animation: shimmer 1.4s linear infinite;
+}
+
+/* Claude 风格消息标题 */
+.claude-header {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--claude-accent);
+  margin-bottom: 0.5rem;
+}
+
+/* Claude 风格工具调用卡片 */
+.claude-tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border-radius: 1rem;
+  background: var(--surface-tertiary);
+  padding: 0.5rem 0.75rem;
+  margin-top: 1rem;
+}
+
+/* Claude 风格状态指示器 */
+.claude-status-dot {
+  position: relative;
+  display: flex;
+  height: 0.5rem;
+  width: 0.5rem;
+}
+
+.claude-status-dot-inner {
+  position: relative;
+  display: inline-flex;
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 9999px;
+}
+
+.claude-status-dot-ping {
+  position: absolute;
+  display: inline-flex;
+  height: 100%;
+  width: 100%;
+  border-radius: 9999px;
+  opacity: 0.75;
+  animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes ping {
+  75%,
+  100% {
+    transform: scale(2);
+    opacity: 0;
   }
 }

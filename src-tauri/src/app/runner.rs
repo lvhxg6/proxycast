@@ -81,6 +81,8 @@ pub fn run() {
         webview_manager: webview_manager_state,
         update_check_service: update_check_service_state,
         session_files: session_files_state,
+        context_memory_service,
+        tool_hooks_service,
         shared_stats,
         shared_tokens,
         shared_logger,
@@ -164,6 +166,8 @@ pub fn run() {
         .manage(webview_manager_state)
         .manage(update_check_service_state)
         .manage(session_files_state)
+        .manage(context_memory_service)
+        .manage(tool_hooks_service)
         .on_window_event(move |window, event| {
             // 处理窗口关闭事件
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -190,13 +194,13 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            // 设置 TerminalTool 的 AppHandle（用于发送事件到前端）
-            crate::agent::tools::set_terminal_tool_app_handle(app.handle().clone());
-            tracing::info!("[启动] TerminalTool AppHandle 已设置");
+            // TODO: 重新实现 TerminalTool 和 TermScrollbackTool 的 AppHandle 设置
+            // 当前暂时注释掉，等待适配 aster-rust 工具系统
+            // crate::agent::tools::set_terminal_tool_app_handle(app.handle().clone());
+            // tracing::info!("[启动] TerminalTool AppHandle 已设置");
 
-            // 设置 TermScrollbackTool 的 AppHandle（用于发送事件到前端）
-            crate::agent::tools::set_term_scrollback_tool_app_handle(app.handle().clone());
-            tracing::info!("[启动] TermScrollbackTool AppHandle 已设置");
+            // crate::agent::tools::set_term_scrollback_tool_app_handle(app.handle().clone());
+            // tracing::info!("[启动] TermScrollbackTool AppHandle 已设置");
 
             // 初始化托盘管理器
             // Requirements 1.4: 应用启动时显示停止状态图标
@@ -462,13 +466,11 @@ pub fn run() {
                                         match provider_overview.provider_type.as_str() {
                                             "kiro" => "Kiro",
                                             "gemini" => "Gemini",
-                                            "qwen" => "通义千问",
                                             "antigravity" => "Antigravity",
                                             "openai" => "OpenAI",
                                             "claude" => "Claude",
                                             "codex" => "Codex",
                                             "claude_oauth" => "Claude OAuth",
-                                            "iflow" => "iFlow",
                                             _ => &provider_overview.provider_type,
                                         };
                                     loaded_types.push(format!("{} ({} 个)", provider_name, count));
@@ -660,13 +662,6 @@ pub fn run() {
             app_commands::get_gemini_env_variables,
             app_commands::get_gemini_token_file_hash,
             app_commands::check_and_reload_gemini_credentials,
-            // Legacy Qwen commands (from app::commands, deprecated)
-            app_commands::get_qwen_credentials,
-            app_commands::reload_qwen_credentials,
-            app_commands::refresh_qwen_token,
-            app_commands::get_qwen_env_variables,
-            app_commands::get_qwen_token_file_hash,
-            app_commands::check_and_reload_qwen_credentials,
             // OpenAI Custom commands (from app::commands)
             app_commands::get_openai_custom_status,
             app_commands::set_openai_custom_config,
@@ -757,15 +752,12 @@ pub fn run() {
             commands::provider_pool_cmd::add_kiro_oauth_credential,
             commands::provider_pool_cmd::add_kiro_from_json,
             commands::provider_pool_cmd::add_gemini_oauth_credential,
-            commands::provider_pool_cmd::add_qwen_oauth_credential,
             commands::provider_pool_cmd::add_antigravity_oauth_credential,
             commands::provider_pool_cmd::add_openai_key_credential,
             commands::provider_pool_cmd::add_claude_key_credential,
             commands::provider_pool_cmd::add_gemini_api_key_credential,
             commands::provider_pool_cmd::add_codex_oauth_credential,
             commands::provider_pool_cmd::add_claude_oauth_credential,
-            commands::provider_pool_cmd::add_iflow_oauth_credential,
-            commands::provider_pool_cmd::add_iflow_cookie_credential,
             commands::provider_pool_cmd::refresh_pool_credential_token,
             commands::provider_pool_cmd::get_pool_credential_oauth_status,
             commands::provider_pool_cmd::debug_kiro_credentials,
@@ -779,10 +771,6 @@ pub fn run() {
             commands::provider_pool_cmd::start_claude_oauth_login,
             commands::provider_pool_cmd::exchange_claude_oauth_code,
             commands::provider_pool_cmd::claude_oauth_with_cookie,
-            commands::provider_pool_cmd::get_qwen_device_code_and_wait,
-            commands::provider_pool_cmd::start_qwen_device_code_login,
-            commands::provider_pool_cmd::get_iflow_auth_url_and_wait,
-            commands::provider_pool_cmd::start_iflow_oauth_login,
             commands::provider_pool_cmd::get_gemini_auth_url_and_wait,
             commands::provider_pool_cmd::start_gemini_oauth_login,
             commands::provider_pool_cmd::exchange_gemini_code,
@@ -826,6 +814,8 @@ pub fn run() {
             commands::api_key_provider_cmd::get_legacy_api_key_credentials,
             commands::api_key_provider_cmd::migrate_legacy_api_key_credentials,
             commands::api_key_provider_cmd::delete_legacy_api_key_credential,
+            // API Key Provider connection test command
+            commands::api_key_provider_cmd::test_api_key_provider_connection,
             // Route commands
             commands::route_cmd::get_available_routes,
             commands::route_cmd::get_route_curl_examples,
@@ -1003,9 +993,7 @@ pub fn run() {
             // Window control commands
             commands::window_cmd::get_window_size,
             commands::window_cmd::set_window_size,
-            commands::window_cmd::resize_for_flow_monitor,
             commands::window_cmd::restore_window_size,
-            commands::window_cmd::toggle_window_size,
             commands::window_cmd::center_window,
             commands::window_cmd::get_window_size_options,
             commands::window_cmd::set_window_size_by_option,
@@ -1063,8 +1051,9 @@ pub fn run() {
             commands::agent_cmd::agent_get_session,
             commands::agent_cmd::agent_delete_session,
             commands::agent_cmd::agent_get_session_messages,
-            commands::agent_cmd::agent_terminal_command_response,
-            commands::agent_cmd::agent_term_scrollback_response,
+            // TODO: 重新启用这些命令，适配 aster-rust 工具系统
+            // commands::agent_cmd::agent_terminal_command_response,
+            // commands::agent_cmd::agent_term_scrollback_response,
             // Native Agent commands
             commands::native_agent_cmd::native_agent_init,
             commands::native_agent_cmd::native_agent_status,
@@ -1075,6 +1064,7 @@ pub fn run() {
             commands::native_agent_cmd::native_agent_get_session,
             commands::native_agent_cmd::native_agent_delete_session,
             commands::native_agent_cmd::native_agent_list_sessions,
+            commands::native_agent_cmd::agent_permission_response,
             // Aster Agent commands
             commands::aster_agent_cmd::aster_agent_init,
             commands::aster_agent_cmd::aster_agent_status,
@@ -1174,6 +1164,8 @@ pub fn run() {
             commands::model_registry_cmd::get_models_by_tier,
             commands::model_registry_cmd::get_provider_alias_config,
             commands::model_registry_cmd::get_all_alias_configs,
+            commands::model_registry_cmd::fetch_provider_models_from_api,
+            commands::model_registry_cmd::fetch_provider_models_auto,
             // Model Management commands (动态模型列表)
             commands::model_cmd::get_credential_models,
             commands::model_cmd::refresh_credential_models,
@@ -1261,6 +1253,33 @@ pub fn run() {
             commands::session_files_cmd::session_files_list_files,
             commands::session_files_cmd::session_files_cleanup_expired,
             commands::session_files_cmd::session_files_cleanup_empty,
+            // General Chat commands
+            commands::general_chat_cmd::general_chat_create_session,
+            commands::general_chat_cmd::general_chat_list_sessions,
+            commands::general_chat_cmd::general_chat_get_session,
+            commands::general_chat_cmd::general_chat_delete_session,
+            commands::general_chat_cmd::general_chat_rename_session,
+            commands::general_chat_cmd::general_chat_get_messages,
+            commands::general_chat_cmd::general_chat_add_message,
+            commands::general_chat_cmd::general_chat_send_message,
+            commands::general_chat_cmd::general_chat_stop_generation,
+            // Context Memory commands
+            commands::context_memory::save_memory_entry,
+            commands::context_memory::get_session_memories,
+            commands::context_memory::get_memory_context,
+            commands::context_memory::record_error,
+            commands::context_memory::should_avoid_operation,
+            commands::context_memory::mark_error_resolved,
+            commands::context_memory::get_memory_stats,
+            commands::context_memory::cleanup_expired_memories,
+            // Tool Hooks commands
+            commands::tool_hooks::execute_hooks,
+            commands::tool_hooks::add_hook_rule,
+            commands::tool_hooks::remove_hook_rule,
+            commands::tool_hooks::toggle_hook_rule,
+            commands::tool_hooks::get_hook_rules,
+            commands::tool_hooks::get_hook_execution_stats,
+            commands::tool_hooks::clear_hook_execution_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

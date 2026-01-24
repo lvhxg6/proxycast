@@ -330,22 +330,6 @@ pub async fn management_add_credential(
                 );
             }
         }
-        PoolProviderType::Qwen => {
-            if let Some(token_file) = request.token_file {
-                CredentialData::QwenOAuth {
-                    creds_file_path: token_file,
-                }
-            } else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(AddCredentialResponse {
-                        success: false,
-                        message: "Token file is required for Qwen provider".to_string(),
-                        id: None,
-                    }),
-                );
-            }
-        }
         PoolProviderType::Antigravity => {
             if let Some(token_file) = request.token_file {
                 CredentialData::AntigravityOAuth {
@@ -414,23 +398,6 @@ pub async fn management_add_credential(
                 );
             }
         }
-        PoolProviderType::IFlow => {
-            if let Some(token_file) = request.token_file {
-                // 默认使用 OAuth 类型，Cookie 类型需要通过其他方式添加
-                CredentialData::IFlowOAuth {
-                    creds_file_path: token_file,
-                }
-            } else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(AddCredentialResponse {
-                        success: false,
-                        message: "Token file is required for iFlow provider".to_string(),
-                        id: None,
-                    }),
-                );
-            }
-        }
         // Anthropic API Key Provider
         PoolProviderType::Anthropic => {
             if let Some(api_key) = request.api_key {
@@ -444,6 +411,25 @@ pub async fn management_add_credential(
                     Json(AddCredentialResponse {
                         success: false,
                         message: "API key is required for Anthropic provider".to_string(),
+                        id: None,
+                    }),
+                );
+            }
+        }
+        // Anthropic 兼容格式 - 使用 ClaudeKey（与 Anthropic 相同）
+        PoolProviderType::AnthropicCompatible => {
+            if let Some(api_key) = request.api_key {
+                CredentialData::ClaudeKey {
+                    api_key,
+                    base_url: request.base_url,
+                }
+            } else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(AddCredentialResponse {
+                        success: false,
+                        message: "API key is required for Anthropic Compatible provider"
+                            .to_string(),
                         id: None,
                     }),
                 );

@@ -634,6 +634,7 @@ mod tests {
                 content: Some(MessageContent::Text("Hello".to_string())),
                 tool_calls: None,
                 tool_call_id: None,
+                reasoning_content: None,
             }],
             tools: None,
             stream: false,

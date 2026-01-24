@@ -19,7 +19,7 @@
 
 use crate::agent::protocols::{create_protocol, Protocol};
 use crate::agent::tool_loop::{ToolCallResult, ToolLoopEngine, ToolLoopState};
-use crate::agent::tools::{create_default_registry, create_terminal_registry, ToolRegistry};
+use crate::agent::tools::{create_default_registry, ToolRegistry};
 use crate::agent::types::*;
 use crate::models::openai::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ContentPart as OpenAIContentPart,
@@ -100,33 +100,9 @@ impl NativeAgent {
 
     /// 获取 API 请求的有效 base_url
     ///
-    /// 对于自定义 Provider（如 moonshot），返回 `{base_url}/api/provider/{provider_id}`
-    /// 对于内置 Provider，返回原始 base_url
+    /// 所有 Provider 都使用标准路由，不再使用 Amp CLI 路由前缀
     fn get_effective_base_url(&self) -> String {
-        if let Some(ref pid) = self.provider_id {
-            // 检查 provider_id 是否是已知的内置类型
-            let is_builtin = matches!(
-                pid.to_lowercase().as_str(),
-                "openai"
-                    | "claude"
-                    | "anthropic"
-                    | "gemini"
-                    | "kiro"
-                    | "qwen"
-                    | "codex"
-                    | "antigravity"
-                    | "iflow"
-            );
-            if is_builtin {
-                self.base_url.clone()
-            } else {
-                // 自定义 Provider，使用 provider 特定路由
-                // 例如：http://127.0.0.1:8999/api/provider/moonshot
-                format!("{}/api/provider/{}", self.base_url, pid)
-            }
-        } else {
-            self.base_url.clone()
-        }
+        self.base_url.clone()
     }
 
     /// 检查是否是自定义 Provider
@@ -337,6 +313,7 @@ impl NativeAgent {
                 sid,
                 MessageContent::Text(result.content.clone()),
                 result.tool_calls.clone(),
+                result.reasoning_content.clone(),
             );
         }
 
@@ -355,8 +332,18 @@ impl NativeAgent {
         let session_id = request.session_id.clone();
         let mut state = ToolLoopState::new();
 
-        // 获取工具定义
-        let tools = tool_loop_engine.registry().list_definitions_api();
+        // 获取工具定义并转换为 OpenAI 格式
+        let aster_definitions = tool_loop_engine.registry().get_definitions();
+        let tools: Vec<crate::models::openai::Tool> = aster_definitions
+            .into_iter()
+            .map(|def| crate::models::openai::Tool::Function {
+                function: crate::models::openai::FunctionDef {
+                    name: def.name,
+                    description: Some(def.description),
+                    parameters: Some(def.input_schema),
+                },
+            })
+            .collect();
         let tools_ref = if tools.is_empty() {
             None
         } else {
@@ -498,6 +485,7 @@ impl NativeAgent {
             session_id,
             MessageContent::Text(result.content.clone()),
             result.tool_calls.clone(),
+            result.reasoning_content.clone(),
         );
 
         Ok(result)
@@ -652,12 +640,13 @@ impl NativeAgent {
         }
     }
 
-    /// 添加 assistant 消息到会话（支持工具调用）
+    /// 添加 assistant 消息到会话（支持工具调用和推理内容）
     fn add_assistant_message_to_session(
         &self,
         session_id: &str,
         content: MessageContent,
         tool_calls: Option<Vec<ToolCall>>,
+        reasoning_content: Option<String>,
     ) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(session_id) {
@@ -667,7 +656,7 @@ impl NativeAgent {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 tool_calls,
                 tool_call_id: None,
-                reasoning_content: None,
+                reasoning_content,
             });
             session.updated_at = chrono::Utc::now().to_rfc3339();
         }
@@ -832,7 +821,8 @@ impl NativeAgentState {
     ) -> Result<Arc<ToolRegistry>, String> {
         let base_dir = dirs::home_dir().ok_or_else(|| "无法获取用户 home 目录".to_string())?;
         let registry = if terminal_mode {
-            create_terminal_registry(base_dir)
+            // Terminal 模式暂时使用默认注册表
+            create_default_registry(base_dir)
         } else {
             create_default_registry(base_dir)
         };
@@ -865,8 +855,56 @@ impl NativeAgentState {
         })
     }
 
+    /// 创建临时 Agent 用于异步操作（支持根据模型名称动态选择协议）
+    fn create_temp_agent_with_model(&self, model: &str) -> Result<NativeAgent, String> {
+        let guard = self.agent.read();
+        let agent = guard.as_ref().ok_or_else(|| "Agent 未初始化".to_string())?;
+
+        let client = Client::builder()
+            .timeout(Duration::from_secs(300))
+            .connect_timeout(Duration::from_secs(30))
+            .no_proxy()
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+        // 如果有自定义 provider_id，尝试从模型名称推断协议类型
+        let provider_type = if let Some(provider_id) = &agent.provider_id {
+            ProviderType::from_provider_and_model(provider_id, model)
+        } else {
+            agent.provider_type
+        };
+
+        let protocol = create_protocol(provider_type);
+
+        info!(
+            "[NativeAgent] 创建临时 Agent: model={}, provider_type={:?}, provider_id={:?}, protocol_endpoint={}",
+            model,
+            provider_type,
+            agent.provider_id,
+            protocol.endpoint()
+        );
+
+        Ok(NativeAgent {
+            client,
+            base_url: agent.base_url.clone(),
+            api_key: agent.api_key.clone(),
+            sessions: agent.sessions.clone(),
+            config: agent.config.clone(),
+            provider_type,
+            protocol,
+            provider_id: agent.provider_id.clone(),
+        })
+    }
+
     pub async fn chat(&self, request: NativeChatRequest) -> Result<NativeChatResponse, String> {
-        let temp_agent = self.create_temp_agent()?;
+        let model = request.model.clone().unwrap_or_else(|| {
+            self.agent
+                .read()
+                .as_ref()
+                .map(|a| a.config.model.clone())
+                .unwrap_or_default()
+        });
+        let temp_agent = self.create_temp_agent_with_model(&model)?;
         temp_agent.chat(request).await
     }
 
@@ -875,7 +913,14 @@ impl NativeAgentState {
         request: NativeChatRequest,
         tx: mpsc::Sender<StreamEvent>,
     ) -> Result<StreamResult, String> {
-        let temp_agent = self.create_temp_agent()?;
+        let model = request.model.clone().unwrap_or_else(|| {
+            self.agent
+                .read()
+                .as_ref()
+                .map(|a| a.config.model.clone())
+                .unwrap_or_default()
+        });
+        let temp_agent = self.create_temp_agent_with_model(&model)?;
         temp_agent.chat_stream(request, None, tx).await
     }
 
@@ -885,7 +930,14 @@ impl NativeAgentState {
         tx: mpsc::Sender<StreamEvent>,
         tool_loop_engine: &ToolLoopEngine,
     ) -> Result<StreamResult, String> {
-        let temp_agent = self.create_temp_agent()?;
+        let model = request.model.clone().unwrap_or_else(|| {
+            self.agent
+                .read()
+                .as_ref()
+                .map(|a| a.config.model.clone())
+                .unwrap_or_default()
+        });
+        let temp_agent = self.create_temp_agent_with_model(&model)?;
         temp_agent
             .chat_stream_with_tools(request, tx, tool_loop_engine)
             .await
@@ -954,17 +1006,17 @@ mod tests {
         let data2 = r#"{"choices":[{"delta":{"content":" World"}}]}"#;
         let data3 = r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#;
 
-        let (text1, done1, _) = parser.parse_data(data1);
+        let (text1, _, is_done1, _) = parser.parse_data(data1);
         assert_eq!(text1, Some("Hello".to_string()));
-        assert!(!done1);
+        assert!(!is_done1);
 
-        let (text2, done2, _) = parser.parse_data(data2);
+        let (text2, _, is_done2, _) = parser.parse_data(data2);
         assert_eq!(text2, Some(" World".to_string()));
-        assert!(!done2);
+        assert!(!is_done2);
 
-        let (text3, done3, _) = parser.parse_data(data3);
+        let (text3, _, is_done3, _) = parser.parse_data(data3);
         assert!(text3.is_none());
-        assert!(done3);
+        assert!(is_done3);
 
         assert_eq!(parser.get_full_content(), "Hello World");
     }
@@ -981,9 +1033,9 @@ mod tests {
         parser.parse_data(data1);
         parser.parse_data(data2);
         parser.parse_data(data3);
-        let (_, done, _) = parser.parse_data(data4);
+        let (_, _, is_done, _) = parser.parse_data(data4);
 
-        assert!(done);
+        assert!(is_done);
         assert!(parser.has_tool_calls());
 
         let tool_calls = parser.finalize_tool_calls();

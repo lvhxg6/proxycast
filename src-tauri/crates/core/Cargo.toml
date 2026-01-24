@@ -1,0 +1,27 @@
+[package]
+name = "proxycast-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# 序列化
+serde.workspace = true
+serde_json.workspace = true
+
+# 日志
+tracing.workspace = true
+
+# 时间和 UUID
+chrono.workspace = true
+uuid.workspace = true
+
+# 工具库
+indexmap.workspace = true
+parking_lot.workspace = true
+dirs.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

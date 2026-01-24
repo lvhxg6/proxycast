@@ -648,7 +648,11 @@ mod tests {
         ctx.set_provider(ProviderType::Kiro);
 
         let error = ProviderCallError::failover("Rate limit exceeded", Some(429));
-        let available = vec![ProviderType::Kiro, ProviderType::Gemini, ProviderType::Qwen];
+        let available = vec![
+            ProviderType::Kiro,
+            ProviderType::Gemini,
+            ProviderType::OpenAI,
+        ];
 
         let new_provider = step.handle_failover(&ctx, &error, &available);
 

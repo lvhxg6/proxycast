@@ -240,7 +240,7 @@ mod property_tests {
             prop_oneof![
                 Just(ProviderType::Kiro),
                 Just(ProviderType::Gemini),
-                Just(ProviderType::Qwen),
+                Just(ProviderType::OpenAI),
             ],
             "[a-z0-9-]{5,20}", // model
         )
